@@ -1,0 +1,183 @@
+---
+title: "Record configuration: output and histograms"
+description: "Configure output paths, file naming conventions, histogram bin counts, fill-worker threads, and run metadata for the Record stage of the High-Energy pipeline."
+---
+
+The `[record]` section controls everything that happens after your callback fills histograms: where output files land, how they are named, how many histogram bins to allocate by default, and what run-provenance metadata to embed. It is split into four sub-sections — `[record.paths]`, `[record.file]`, and `[record.metadata]` — each covering a distinct responsibility.
+
+## Top-level `[record]` keys
+
+<ParamField path="serial" type="number" default="0">
+  An integer serial number stamped onto output file names and directory names when the corresponding flags are enabled. Useful for distinguishing successive runs with the same settings.
+</ParamField>
+
+<ParamField path="sr_padding" type="number" default="2">
+  Zero-padding width for the serial number in file names. A `serial = 8` with `sr_padding = 2` produces `_08`; with `sr_padding = 3` it produces `_008`.
+</ParamField>
+
+<ParamField path="bin_count" type="number" default="500">
+  Default number of bins for all declared histograms. Individual histogram declarations can override this value, but any histogram that does not specify its own bin count inherits this setting.
+</ParamField>
+
+<ParamField path="hist_scaling" type="number" default="1.0">
+  Scale factor applied to every histogram at write time via `scaleAndWrite`. A value of `1.0` writes histograms unmodified. Useful for normalising counts to luminosity or cross-section.
+</ParamField>
+
+<ParamField path="writer_threads" type="number" default="0">
+  Number of fill-worker threads inside `Record::Writer`. `0` applies auto-sizing. Overrides the `[threads].writer` value when present.
+</ParamField>
+
+<ParamField path="writer_queue_capacity" type="number" default="0">
+  Depth of the fill-request queue. `0` uses the `Record::Writer` internal default of `1024`.
+</ParamField>
+
+## `[record.paths]`
+
+<ParamField path="directory" type="string" default="output/Lambda_Reconstruction/">
+  Root output directory. The ROOT output file, and optionally logs and checkpoints, are placed here (or in sub-directories of it).
+</ParamField>
+
+<ParamField path="output_log_directory" type="string" default="logs/">
+  Directory for log files. When `logInSubDir` is `true`, this path is treated as a sub-directory of `directory`. When `false`, it is used as an independent absolute or relative path.
+</ParamField>
+
+<ParamField path="checkpoint_directory" type="string" default="checkpoints/">
+  Directory for checkpoint snapshot files. Behaviour is governed by `checkpointsInSubDir` in the same way as `output_log_directory`.
+</ParamField>
+
+<ParamField path="serialDirectory" type="boolean" default="true">
+  When `true`, the serial number (zero-padded to `sr_padding`) is appended to `directory`. For example, `output/Lambda_Reconstruction/` with `serial = 8` and `sr_padding = 2` becomes `output/Lambda_Reconstruction/_08/`.
+</ParamField>
+
+<ParamField path="logInSubDir" type="boolean" default="true">
+  When `true`, log files are written to `output_log_directory` resolved as a sub-directory of the final `directory` (after serial expansion). When `false`, `output_log_directory` is used as-is.
+</ParamField>
+
+<ParamField path="checkpointsInSubDir" type="boolean" default="true">
+  When `true`, checkpoint files are written to `checkpoint_directory` resolved as a sub-directory of the final `directory`. When `false`, `checkpoint_directory` is used as-is.
+</ParamField>
+
+## `[record.file]`
+
+These flags control which components are included in the output ROOT file name. The framework assembles the name as `<prefix>[_<serial>][_<energy>GeV][_<events>]`.
+
+<ParamField path="prefix" type="string" default="Lambda">
+  The base name prepended to the output file.
+</ParamField>
+
+<ParamField path="serial" type="boolean" default="true">
+  Include the zero-padded serial number in the file name.
+</ParamField>
+
+<ParamField path="energy" type="boolean" default="true">
+  Include the beam energy (from `[pythia].beam_energy`) in the file name.
+</ParamField>
+
+<ParamField path="events" type="boolean" default="true">
+  Include the event count in the file name.
+</ParamField>
+
+## `[record.metadata]`
+
+Metadata is written into the ROOT output file as a provenance record. All fields are optional strings; leave them empty when not applicable.
+
+<ParamField path="dataset_name" type="string" default="">
+  Human-readable name for the dataset (for example, `"Lambda_MC_pp"`).
+</ParamField>
+
+<ParamField path="data_type" type="string" default="">
+  Data category: `"MC"` for Monte Carlo, `"Data"` for real detector data, and so on.
+</ParamField>
+
+<ParamField path="run_period" type="string" default="">
+  LHC run period or equivalent label (for example, `"Run3"`).
+</ParamField>
+
+<ParamField path="campaign" type="string" default="">
+  Simulation or data-taking campaign identifier.
+</ParamField>
+
+<ParamField path="notes" type="string" default="">
+  Free-form notes about this run.
+</ParamField>
+
+<ParamField path="known_issues" type="string" default="">
+  Known problems or caveats to record alongside the output.
+</ParamField>
+
+<ParamField path="contact" type="string" default="">
+  Contact name or email for questions about this dataset.
+</ParamField>
+
+<ParamField path="generator" type="string" default="">
+  Event generator name (for example, `"Pythia8"`).
+</ParamField>
+
+<ParamField path="tune" type="string" default="">
+  Generator tune identifier (for example, `"Monash"`).
+</ParamField>
+
+<ParamField path="pdf_set" type="string" default="">
+  Parton distribution function set used in generation.
+</ParamField>
+
+## Example
+
+<CodeGroup>
+
+```toml Lambda_Reconstruction.toml
+[record]
+serial     = 41
+sr_padding = 2
+bin_count  = 400
+
+[record.paths]
+directory            = "output/Lambda_Reconstruction/"
+output_log_directory = "logs/"
+checkpoint_directory = "checkpoints/"
+serialDirectory      = true
+logInSubDir          = true
+checkpointsInSubDir  = true
+
+[record.file]
+prefix = "Lambda_Recons"
+serial = false
+energy = false
+events = true
+
+[record.metadata]
+dataset_name = "Lambda_MC_pp"
+data_type    = "MC"
+run_period   = ""
+campaign     = ""
+notes        = ""
+```
+
+```toml Lambda_Generation.toml
+[record]
+serial         = 99
+sr_padding     = 2
+bin_count      = 500
+hist_scaling   = 1.0
+writer_threads = 0
+
+[record.paths]
+directory            = "output/Lambda_Reconstruction/"
+output_log_directory = "logs/"
+checkpoint_directory = "checkpoints/"
+serialDirectory      = true
+logInSubDir          = true
+checkpointsInSubDir  = true
+
+[record.file]
+prefix = "Lambda_Gen"
+serial = false
+energy = true
+events = true
+
+[record.metadata]
+dataset_name = "Lambda_MC_pp"
+data_type    = "MC"
+```
+
+</CodeGroup>

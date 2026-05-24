@@ -1,0 +1,167 @@
+---
+title: "Generate Monte Carlo events with Pythia8"
+description: "Use the _Lambda_Data driver and a Pythia8 cmnd file to produce a ROOT TTree of proton and pion four-vectors, ready to feed the Lambda reconstruction pipeline."
+sidebarTitle: "Data generation"
+---
+
+The `_Lambda_Data` driver runs Pythia8 in parallel, harvests final-state protons (PDG 2212) and π⁻ mesons (PDG −211) from each event, and writes their four-momenta to a ROOT file as two TTrees (`Protons` and `Pions`). The output is the standard input format for the [Lambda reconstruction pipeline](/guides/lambda-reconstruction).
+
+## Prerequisites
+
+- Pythia8 installed and linked (the framework's `Makefile` handles this automatically).
+- A Pythia8 `.cmnd` settings file (the default is `configs/Lambda_Reconstruction.cmnd`).
+
+<Steps>
+
+<Step title="Configure the Pythia settings">
+
+Edit `configs/Lambda_Generation.toml`. The `[pythia]` section controls the generator:
+
+```toml configs/Lambda_Generation.toml
+[events]
+event_count = 10000
+
+[pythia]
+pythia_threads = 0          # 0 = auto (⌊(hw-2)/3⌋, minimum 1)
+beam_energy    = 7000       # centre-of-mass energy in GeV (forwarded as Beams:eCM)
+cmnd_file      = "configs/Lambda_Reconstruction.cmnd"
+seed           = 270403     # reproducible seed; 0 = Pythia default
+```
+
+`pythia_threads` and `beam_energy` are the two knobs you will change most often. Set `pythia_threads = 0` to let the framework pick a thread count automatically (see [Threading](/guides/threading)).
+
+The `.cmnd` file is a standard Pythia8 settings file. It configures process selection, PDF sets, and any other Pythia tune options independently of the framework config. The `beam_energy` key overrides whatever `Beams:eCM` is set to in the `.cmnd` file, so you only need to change the TOML value when scanning energies.
+
+</Step>
+
+<Step title="Configure the output paths and file naming">
+
+```toml configs/Lambda_Generation.toml
+[record]
+writer_threads = 0          # fill-worker threads (0 = auto)
+serial         = 99         # appended to the output directory name
+sr_padding     = 2          # zero-pad serial to this width (e.g. _99)
+bin_count      = 500
+hist_scaling   = 1.0
+
+[record.paths]
+directory            = "output/Lambda_Reconstruction/"
+output_log_directory = "logs/"
+checkpoint_directory = "checkpoints/"
+serialDirectory      = true
+logInSubDir          = true
+checkpointsInSubDir  = true
+
+[record.file]
+prefix = "Lambda_Gen"
+serial = false
+energy = true               # embed beam energy in filename
+events = true               # embed event count in filename
+```
+
+With these settings the output file is written to `output/Lambda_Reconstruction/_99/Lambda_Gen_7000GeV_10000.root`.
+
+</Step>
+
+<Step title="Understand the output tree structure">
+
+`Lambda::declareDataObjects` registers two TTrees with identical branch layouts:
+
+| Tree | Description |
+|------|-------------|
+| `Protons` | Final-state protons (PDG 2212) |
+| `Pions` | Final-state π⁻ (PDG −211) |
+
+Each tree has five branches:
+
+| Branch | Type | Enum value |
+|--------|------|------------|
+| `event_index` | `Int32` | `DataBranch::EventIndex` |
+| `Energy` | `Double` | `DataBranch::Energy` |
+| `pX` | `Double` | `DataBranch::Px` |
+| `pY` | `Double` | `DataBranch::Py` |
+| `pZ` | `Double` | `DataBranch::Pz` |
+
+The `event_index` branch is written as a 32-bit integer (not the `Index` name used by some external files). When you feed this output to the reconstruction pipeline, set `index = ["event_index", "I"]` in each `[probe.events.particles.*]` table.
+
+</Step>
+
+<Step title="Understand the dataGenerator callback">
+
+`Lambda::dataGenerator` is called once per Pythia8 event on whichever worker thread owns that event. It harvests particles, then fills the writer trees directly:
+
+```cpp modules/Lambda.hh
+inline void dataGenerator(Pythia8::Pythia& pythia, GenerationContext& ctx)
+{
+    const std::size_t eventIndex = ctx.asyncLogger.countEvent();
+    const int workerIndex = pythia.mode("Parallelism:index");
+
+    const auto [protons, pions] = harvestParticles(pythia);
+
+    const auto eventIdx = static_cast<std::int32_t>(eventIndex);
+    for (const auto& proton : protons) {
+        ctx.writer.fillTree<DataTree, DataBranch>(DataTree::Protons, {
+            {DataBranch::EventIndex, eventIdx},
+            {DataBranch::Energy,     proton.E()},
+            {DataBranch::Px,         proton.Px()},
+            {DataBranch::Py,         proton.Py()},
+            {DataBranch::Pz,         proton.Pz()},
+        });
+    }
+
+    for (const auto& pion : pions) {
+        ctx.writer.fillTree<DataTree, DataBranch>(DataTree::Pions, {
+            {DataBranch::EventIndex, eventIdx},
+            {DataBranch::Energy,     pion.E()},
+            {DataBranch::Px,         pion.Px()},
+            {DataBranch::Py,         pion.Py()},
+            {DataBranch::Pz,         pion.Pz()},
+        });
+    }
+
+    ctx.logging.recordEvent(std::chrono::system_clock::now());
+    ctx.asyncLogger.publish(Monitor::RunPhase::Analysis);
+}
+```
+
+`harvestParticles` iterates the Pythia event record and keeps only particles that pass `isFinal()`, selecting protons by PDG ID `2212` and π⁻ by PDG ID `−211`. Beam remnants and intermediate states are skipped.
+
+</Step>
+
+<Step title="Build and run">
+
+```bash
+make _Lambda_Data
+./_Lambda_Data.exe configs/Lambda_Generation.toml
+```
+
+Pass an alternative TOML path as the first argument. The executable defaults to `configs/Lambda_Generation.toml` when no argument is given.
+
+</Step>
+
+<Step title="Inspect the output">
+
+Open the output ROOT file in an interactive ROOT session to verify the tree structure:
+
+```bash
+root -l output/Lambda_Reconstruction/_99/Lambda_Gen_7000GeV_10000.root
+```
+
+```cpp ROOT session
+root [0] .ls
+TFile** Lambda_Gen_7000GeV_10000.root
+ TFile*  Lambda_Gen_7000GeV_10000.root
+  KEY: TTree    Protons;1    Final state protons
+  KEY: TTree    Pions;1      Final state #pi^{-}
+root [1] Protons->Print()
+```
+
+Confirm that the `event_index`, `Energy`, `pX`, `pY`, and `pZ` branches are present before feeding the file to the reconstruction step.
+
+</Step>
+
+</Steps>
+
+<Tip>
+To generate a large dataset for full-statistics reconstruction, increase `event_count` and `pythia_threads` together. A good starting ratio is one Pythia thread per physical core minus two (the same formula the framework uses automatically when `pythia_threads = 0`).
+</Tip>

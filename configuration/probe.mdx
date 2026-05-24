@@ -1,0 +1,128 @@
+---
+title: "Probe configuration: input and particles"
+description: "Configure the Probe stage: set your ROOT input file, describe particle trees with branch types and coordinate specs, and choose a callback delivery mode."
+---
+
+The `[probe]` section tells High-Energy where to find your data and how to decode it. You supply the path to a ROOT file and describe each particle tree using a set of sub-tables. `Config::configure` turns those descriptions into a `Probe::ProbeConfig` that the parallel reader uses to open branches, join events across trees, and deliver typed `Event` objects to your callback.
+
+## Top-level `[probe]` keys
+
+<ParamField path="input_file" type="string" required>
+  Path to the input ROOT file. Relative paths are resolved from the working directory at run time.
+</ParamField>
+
+<ParamField path="probe_threads" type="number" default="0">
+  Number of ROOT reader threads. `0` applies the auto-sizing rule: `floor((hardware_concurrency - 2) / 3)`, minimum `1`. Overrides the `[threads].probe` value when present.
+</ParamField>
+
+<ParamField path="analysis_threads" type="number" default="0">
+  Number of collector threads that invoke the user callback. `0` defaults to the same count as `probe_threads`. Only used in `CollectorThread` mode; ignored in `WorkerThread` mode.
+</ParamField>
+
+<ParamField path="callback_mode" type="string" default="CollectorThread">
+  Controls how reader threads deliver events to the user callback.
+
+  - `"CollectorThread"` — reader workers push event frames onto a bounded queue; `analysis_threads` dedicated collector threads pop and invoke the callback concurrently. Use this when your callback does non-trivial work and you want to decouple I/O from analysis.
+  - `"WorkerThread"` — each reader worker invokes the callback directly inline. `analysis_threads` is ignored. Lowest latency per event, but your callback must tolerate concurrent calls from `probe_threads` workers.
+</ParamField>
+
+<ParamField path="queue_capacity" type="number" default="0">
+  Maximum depth of the bounded event queue (used in `CollectorThread` mode). `0` sets the capacity to `10 × probe_threads`.
+</ParamField>
+
+## `[probe.events.particles.<label>]`
+
+Each particle species in your ROOT file gets its own sub-table under `[probe.events.particles.<label>]`, where `<label>` is the name you use to access the particle in your callback (`event.particle["protons"]`, for example). The framework joins rows from all particle trees that share the same event-index value before delivering an `Event` to your callback.
+
+<ParamField path="tree" type="string" required>
+  Name of the `TTree` in the ROOT file that holds this particle's branches.
+</ParamField>
+
+<ParamField path="spec" type="number" required>
+  Coordinate system used to construct a `Lorentz` 4-vector from the four momentum branches. Valid values:
+
+  | ID | Coordinate system | Branch order |
+  |---|---|---|
+  | `0` | Cartesian | `x`, `y`, `z`, `E` |
+  | `1` | `PtEtaPhiE` | `pT`, `η`, `φ`, `E` |
+  | `2` | `PtEtaPhiM` | `pT`, `η`, `φ`, `M` |
+</ParamField>
+
+<ParamField path="branches" type="array" required>
+  A list of exactly four `[branch_name, type_code]` pairs, in the order required by `spec`. Branch type codes:
+
+  | Code | ROOT type |
+  |---|---|
+  | `"D"` | `Double_t` |
+  | `"F"` | `Float_t` |
+  | `"I"` | `Int_t` |
+  | `"L"` | `Long64_t` |
+</ParamField>
+
+<ParamField path="index" type="array" required>
+  A `[branch_name, type_code]` pair identifying the branch used to group rows into events. All particle trees that share the same index value on a given entry belong to the same event.
+</ParamField>
+
+<ParamField path="index_sorted" type="boolean" default="false">
+  When `true`, tells the reader that rows within each event are already sorted by their index value. Enables an optimised join path that avoids a sort step.
+</ParamField>
+
+<ParamField path="index_ascending" type="boolean" default="false">
+  When `true`, asserts that index values are non-decreasing across the entire tree. Used together with `index_sorted` to validate or optimise sequential reads.
+</ParamField>
+
+<ParamField path="index_monotonic" type="boolean" default="false">
+  When `true`, asserts that no index value appears more than once within a single event group. Enables further join optimisations.
+</ParamField>
+
+## `[probe.feed.particles.<label>]` and `[probe.feed.nodes.<label>]`
+
+Feed sub-tables describe a flat, per-entry payload rather than a multi-tree event join. Each entry delivers one `Lorentz` per labelled particle plus named scalar or array columns from node tables, collected into a `Feed` object.
+
+Use `[probe.feed.particles.<label>]` with the same `tree`, `spec`, `branches`, and `index` keys as event particles. Use `[probe.feed.nodes.<label>]` to attach additional scalar or array branches from the same or a different tree.
+
+<Note>
+  `streamEvents()`, `streamFeed()`, and `stream()` are selected automatically based on which sub-tables you populate. If you define both `[probe.events.*]` and `[probe.feed.*]` tables, High-Energy activates `Mixed` mode and fires both callbacks per entry.
+</Note>
+
+## Example
+
+<CodeGroup>
+
+```toml Lambda_Reconstruction.toml
+[probe]
+input_file    = "output/Lambda_Data/_08/Lambda_Recons_7000GeV_10M.root"
+callback_mode = "CollectorThread"
+
+[probe.events.particles.protons]
+tree            = "Protons"
+spec            = 0
+branches        = [["pX","D"], ["pY","D"], ["pZ","D"], ["Energy","D"]]
+index           = ["Index", "I"]
+index_sorted    = true
+index_ascending = true
+index_monotonic = true
+
+[probe.events.particles.pions]
+tree            = "Pions"
+spec            = 0
+branches        = [["pX","D"], ["pY","D"], ["pZ","D"], ["Energy","D"]]
+index           = ["Index", "I"]
+index_sorted    = true
+index_ascending = true
+index_monotonic = true
+```
+
+```toml inline array format (alternative)
+[probe]
+input_file = "output/Lambda_Data/_08/Lambda_Recons_7000GeV_10M.root"
+
+# spec_id: 0=Cartesian  1=PtEtaPhiE  2=PtEtaPhiM
+# type codes: D=Double_t  F=Float_t  I=Int_t  L=Long64_t
+event_particles = [
+    ["protons", 0, "Protons", [["pX","D"],["pY","D"],["pZ","D"],["Energy","D"]], [["Index","I"]]],
+    ["pions",   0, "Pions",   [["pX","D"],["pY","D"],["pZ","D"],["Energy","D"]], [["Index","I"]]],
+]
+```
+
+</CodeGroup>

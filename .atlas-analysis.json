@@ -1,0 +1,92 @@
+{
+  "projectType": "framework",
+  "projectName": "High-Energy",
+  "projectDescription": "A C++17 multi-threaded analysis framework for reconstructing high-energy physics events from ROOT TTrees, with TOML-driven configuration, parallel data streaming, threaded histogram writing, and offline histogram rendering.",
+  "theme": "aspen",
+  "primaryColor": "#0c64c4",
+  "lightColor": "#84b4dc",
+  "darkColor": null,
+  "navigation": {
+    "tabs": [
+      {
+        "tab": "Documentation",
+        "groups": [
+          {
+            "group": "Get Started",
+            "pages": [
+              "introduction",
+              "quickstart",
+              "installation"
+            ]
+          },
+          {
+            "group": "Configuration",
+            "pages": [
+              "configuration/overview",
+              "configuration/events",
+              "configuration/probe",
+              "configuration/record",
+              "configuration/monitor",
+              "configuration/limits"
+            ]
+          },
+          {
+            "group": "Core Concepts",
+            "pages": [
+              "concepts/pipeline",
+              "concepts/probe-streaming",
+              "concepts/record-writer",
+              "concepts/monitor"
+            ]
+          },
+          {
+            "group": "Guides",
+            "pages": [
+              "guides/lambda-reconstruction",
+              "guides/data-generation",
+              "guides/paint-histograms",
+              "guides/threading"
+            ]
+          },
+          {
+            "group": "Reference",
+            "pages": [
+              "reference/physics-types",
+              "reference/paint-config",
+              "reference/toml-schema"
+            ]
+          }
+        ]
+      }
+    ]
+  },
+  "keyFeatures": [
+    "Parallel ROOT TTree streaming with ProbeParallel (Event, Feed, and Mixed modes)",
+    "Thread-safe multi-worker histogram and TTree writing via Record::Writer",
+    "TOML-based configuration for all pipeline stages",
+    "Background progress monitoring with stall detection and checkpoint saving",
+    "Offline ROOT histogram rendering with style presets via Paint",
+    "Lambda baryon candidate reconstruction with combinatoric filtering",
+    "Pythia8 Monte Carlo event generation integration",
+    "Configurable thread counts for probe readers, analysis callbacks, and fill workers"
+  ],
+  "publicApiSurface": [
+    "ProbeParallel::streamEvents(callback)",
+    "ProbeParallel::streamFeed(callback)",
+    "ProbeParallel::stream(eventCallback, feedCallback)",
+    "ProbeParallel::configureProbe(inputFile, ProbeConfig, threadCount, requestedEvents)",
+    "ProbeIMT::run(callback)",
+    "Record::Writer::declareParticleGroup()",
+    "Record::Writer::declareTH1() / declareTH2() / declareGraph() / declareProfile() / declareTree()",
+    "Record::Writer::fillParticleEvent() / fillTH1() / fillTH2() / fillGraph() / fillProfile() / fillTree()",
+    "Record::Writer::open() / start() / finalize() / checkpoint()",
+    "Monitor::AsyncLogger::start() / stop() / publish() / countEvent()",
+    "Config::configure<ProbePipeline>(configPath)",
+    "Config::readConfig(configPath)",
+    "Paint::Illustrator::loadBook() / resolveBook() / renderPlan()",
+    "Lambda::configure(parameters, writer, configPath)",
+    "Lambda::rootAnalysis(event, threadId, context)",
+    "Lambda::reconstructCandidates(protons, pions, parameters)",
+    "Lambda::fillCandidates(writer, candidates)"
+  ]
+}

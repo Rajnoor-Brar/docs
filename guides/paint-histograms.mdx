@@ -1,0 +1,224 @@
+---
+title: "Render ROOT histograms with the Paint renderer"
+description: "Configure Paint.toml to export histograms from a ROOT output file to PNG or PDF, with per-result style overrides and overlay or grid layouts."
+sidebarTitle: "Paint histograms"
+---
+
+Paint is an offline ROOT plotting layer that reads histogram objects from a ROOT file and renders them to image files without you writing a single ROOT macro. You describe each output image declaratively in a TOML file: which histogram objects to draw, what mode to use (single, overlay, or grid), and how to style them. The `_Paint` executable then does the rest.
+
+## Prerequisites
+
+- A ROOT output file from the reconstruction or generation pipeline.
+- `_Paint` built (`make _Paint`).
+
+<Steps>
+
+<Step title="Point Paint at your ROOT file">
+
+Create or edit `configs/Paint.toml`. The top-level `[paint]` table sets global defaults:
+
+```toml configs/Paint.toml
+[paint]
+default_style = "configs/defaults/Paint.toml"   # base style merged before your overrides
+root_file     = "output/Lambda_Reconstruction/_27/Lambda_Recons_GeV_1M.root"
+result_dir    = "results/hist"
+formats       = ["png"]
+overwrite     = true
+image_scale   = 4
+text_scale    = 1.0
+brush_scale   = 1.0
+```
+
+`default_style` points to `configs/defaults/Paint.toml`, which ships sensible defaults for canvas size, fonts, margins, and the stats box. Your `[paint]` table is merged on top, so you only need to specify what differs.
+
+`image_scale` multiplies the canvas `width` and `height` at render time. Setting it to `4` renders at 3600×2400 pixels for a 900×600 canvas, suitable for publication figures.
+
+`results` is the list of named result entries to render. Each name must have a corresponding `[paint.<name>]` table later in the file:
+
+```toml configs/Paint.toml
+results = [
+    "unvalidated_mass_invariant",
+    "validated_mass_invariant",
+    "selected_mass_invariant",
+    "mass",
+    ...
+]
+```
+
+</Step>
+
+<Step title="Configure the default style">
+
+`[paint.default]` provides the fallback style applied to every result that does not override a key:
+
+```toml configs/all.toml (paint section)
+[paint.default]
+line_color   = "kBlue-6"
+line_width   = 2
+line_style   = 1
+fill_color   = "kBlue-7"
+fill_style   = 3003
+marker_color = "kBlack"
+marker_style = 20
+marker_size  = 1.0
+draw_option  = "HIST"
+minimum      = 0.0
+maximum      = 0.0
+log_x        = false
+log_y        = false
+
+[paint.default.canvas]
+width    = 900
+height   = 600
+margin_l = 0.12
+margin_r = 0.05
+margin_b = 0.12
+margin_t = 0.08
+ticks_x  = true
+ticks_y  = true
+
+[paint.default.stats]
+show        = true
+opt_stat    = "emr"
+x           = 0.92
+y           = 0.89
+width       = 0.18
+height      = 0.10
+text_font   = 43
+text_size   = 12.0
+border_size = 2
+fill_color  = 0
+fill_style  = 1001
+
+[paint.default.legend]
+show        = false
+x1          = 0.65
+y1          = 0.75
+x2          = 0.88
+y2          = 0.88
+text_font   = 43
+text_size   = 14.0
+border_size = 0
+fill_style  = 0
+
+[paint.default.axis]
+title_font    = 43
+label_font    = 43
+title_size    = 27.0
+label_size    = 20.0
+offset_x      = 1.1
+offset_y      = 1.35
+center_titles = true
+max_digits_y  = 3
+```
+
+Colors are specified as ROOT color strings such as `"kBlue-6"` or `"kRed-4"`. The integer offset (e.g. `-6`) is the standard ROOT `TColor` adjustment applied to the base color constant.
+
+</Step>
+
+<Step title="Define single-histogram results">
+
+Add one `[paint.<name>]` table per result. For a plain single-histogram plot you only need to specify the ROOT object path and a title:
+
+```toml configs/Paint.toml
+[paint.unvalidated_mass_invariant]
+title       = "Unvalidated Mass Invariant"
+output_name = "unvalidated_mass_invariant"
+sources     = [{ path = "Unvalidated/Unvalidated_Mass_Invariant_Hist" }]
+```
+
+`path` is the slash-separated path inside the ROOT file, relative to the file root. `output_name` sets the output filename stem (e.g. `results/hist/unvalidated_mass_invariant.png`).
+
+`source_type` defaults to `"H1"` (one-dimensional histogram). Other valid values are `"H2"` (two-dimensional), `"TProfile"`, and `"Graph"`.
+
+</Step>
+
+<Step title="Define an overlay result">
+
+An overlay plot draws multiple histograms on the same canvas. Assign each source a label and a color from `palette`:
+
+```toml configs/Paint.toml
+[paint.mass]
+mode    = "overlay"
+palette = ["kBlue-6", "kRed-6", "kGreen-6"]
+sources = [
+    { path = "Unvalidated/Unvalidated_Mass_Invariant_Hist", label = "Unvalidated" },
+    { path = "Validated/Validated_Mass_Invariant_Hist",     label = "Validated"   },
+    { path = "Selected/Selected_Mass_Invariant_Hist",       label = "Selected"    },
+]
+title       = "Mass_Invariant Distribution"
+output_name = "mass"
+draw_option = "HIST"
+brush_scale = 0.5
+fill_style  = 0
+
+[paint.mass.legend]
+show = true
+```
+
+Palette entries are applied to sources in order. Setting `fill_style = 0` disables the fill so that overlapping histograms remain readable. Enable the legend by setting `show = true` in the result's own `[paint.<name>.legend]` sub-table, which overrides the `[paint.default.legend]` setting.
+
+</Step>
+
+<Step title="Define a grid result">
+
+Grid mode arranges multiple sources as sub-pads on a single canvas. Set `mode = "grid"` and optionally specify `rows` and `cols`; leave both at `0` to let Paint infer the layout from the source count:
+
+```toml
+[paint.kinematics_grid]
+mode    = "grid"
+rows    = 2
+cols    = 3
+title   = "Kinematic distributions"
+output_name = "kinematics_grid"
+sources = [
+    { path = "Selected/Selected_Mass_Invariant_Hist",      label = "Mass" },
+    { path = "Selected/Selected_Energy_Net_Hist",          label = "Energy" },
+    { path = "Selected/Selected_Momentum_Net_Hist",        label = "Momentum" },
+    { path = "Selected/Selected_Momentum_Transverse_Hist", label = "pT" },
+    { path = "Selected/Selected_Momentum_Z_Hist",          label = "pZ" },
+    { path = "Selected/Selected_Pseudorapidity_Hist",      label = "η" },
+]
+```
+
+</Step>
+
+<Step title="Build and run">
+
+```bash
+make _Paint
+./_Paint.exe configs/Paint.toml
+```
+
+To preview the resolved plan without writing any files, pass `--dry-run`:
+
+```bash
+./_Paint.exe configs/Paint.toml --dry-run
+```
+
+Output images are written to the directory set in `result_dir`. If `overwrite = false`, Paint exits with an error rather than replacing an existing file.
+
+</Step>
+
+</Steps>
+
+## Source types
+
+| Value | ROOT type | Use for |
+|-------|-----------|---------|
+| `"H1"` | `TH1` | One-dimensional histograms (default) |
+| `"H2"` | `TH2` | Two-dimensional histograms |
+| `"TProfile"` | `TProfile` | Profile histograms |
+| `"Graph"` | `TGraph` | Scatter / line graphs |
+
+## Render modes
+
+| Mode | Description |
+|------|-------------|
+| `single` | One source, one canvas (default) |
+| `overlay` | All sources drawn on one pad with a shared axis |
+| `grid` | Each source in its own sub-pad, tiled on one canvas |
+
+<Tip>
+You can reuse style blocks across results with preset keys such as `canvas_use`, `stats_use`, `legend_use`, and `axis_use`. Set one of these to the name of another `[paint.<preset>]` table and Paint copies only that sub-section, leaving the rest of the result's style intact.
+</Tip>

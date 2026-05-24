@@ -1,0 +1,168 @@
+---
+title: "Thread-safe histogram writing with Record::Writer"
+description: "Learn how Record::Writer accepts fill requests from concurrent callbacks, buffers them through a worker pool, and merges per-worker ROOT clones at finalization."
+---
+
+`Record::Writer` is the output stage of the High-Energy pipeline. It accepts histogram and tree fill requests from your analysis callback, buffers them through a pool of fill-worker threads, and writes the merged results to a ROOT file at the end of the run. You never access ROOT objects directly from callback code — every fill operation goes through a queue, keeping callbacks fast and thread-safe regardless of how many collector threads are calling them simultaneously. The Writer also owns a Watchdog thread that monitors event throughput, triggers periodic checkpoints, and initiates finalization when streaming ends.
+
+## Lifecycle
+
+<Steps>
+  <Step title="open()">
+    Call `writer.open(outputPath)` to create the output ROOT file and prepare internal state. This happens before any histogram declarations.
+  </Step>
+  <Step title="Declare histograms and trees">
+    Call the `declareXxx` methods to register every ROOT object the Writer will manage. Declarations must complete before `start()`. Each declaration names the object, sets its binning or branch schema, and attaches it to the Writer's internal registry.
+  </Step>
+  <Step title="start()">
+    Call `writer.start()` to launch the fill-worker threads and the Watchdog thread. After this point, callbacks can safely push fill requests.
+  </Step>
+  <Step title="Fill from callbacks">
+    Your analysis callback calls `fillParticleEvent`, `fillTH1`, `fillTH2`, `fillTree`, and so on. Each call pushes a move-only `FillRequest` variant onto a bounded deque — no ROOT I/O happens on the callback thread.
+  </Step>
+  <Step title="finalize()">
+    After `streamEvents` returns, the Watchdog triggers finalization. The fill queue drains completely, then `mergeAllClones()` resets every master ROOT object and `Add()`s each fill-worker's private clone into it. Finally, `TFile::Write()` persists the merged masters to disk.
+  </Step>
+</Steps>
+
+## Declaration methods
+
+You declare every ROOT object the Writer will manage before calling `start()`. These methods register the object in the Writer's internal registry and allocate per-worker clones in `allocateAllClones()` at `start()` time.
+
+| Method | ROOT object | Notes |
+|---|---|---|
+| `declareParticleGroup(key, specs)` | Particle histogram group | Registers a named group of per-property TH1s |
+| `declareTH1(key, config)` | `TH1D` | Single 1-D histogram with bin count and axis limits |
+| `declareTH2(key, config)` | `TH2D` | 2-D histogram with independent x/y binning |
+| `declareGraph(key)` | `TGraph` | Scatter graph; points are appended sequentially |
+| `declareProfile(key, config)` | `TProfile` | Profile histogram with error-bar mode |
+| `declareTree(key, branches)` | `TTree` | Output tree with a typed branch schema |
+
+## Fill methods
+
+Call these from inside your analysis callback. Each method constructs a typed `FillRequest` and pushes it to the fill queue via `pushFill()`. No ROOT objects are touched on the calling thread.
+
+| Method | Purpose |
+|---|---|
+| `fillParticleEvent(basis, particles)` | Fill all histograms in a particle group for a `vector<Lorentz>` |
+| `fillTH1(key, value)` | Fill a single bin of a named `TH1D` |
+| `fillTH2(key, x, y)` | Fill a single bin of a named `TH2D` |
+| `fillGraph(key, x, y)` | Append a point to a named `TGraph` |
+| `fillTree<TreeEnum, BranchEnum>(tree, values)` | Fill a row of a named `TTree` |
+
+## The FillRequest queue
+
+The queue separates your callback from ROOT's non-thread-safe fill operations. The flow for every fill call is the same:
+
+```text
+callback thread
+    │
+    ▼ fillParticleEvent(basis, particles)
+    │
+    ▼ pushFill(ParticleRequest{...})      ← move-only; no copy
+    │
+    ▼ bounded deque
+    │
+    ▼ fill-worker thread dequeues
+    │
+    ▼ fill-worker applies request to its clone
+    │
+    ▼ clone[workerIdx]->Fill(...)
+```
+
+The deque has a configurable capacity (`writer_queue_capacity` in `[record]`; default 1024). If the queue fills, `pushFill` blocks until a worker drains an entry, providing natural backpressure that prevents unbounded memory growth during fast streaming.
+
+## Per-worker clone model
+
+Each fill worker has its own private copy of every declared ROOT object, allocated in `allocateAllClones()` at `start()` time. Clones are **detached from any `TDirectory`** so they do not appear in the output file prematurely. Because each worker fills only its own clones, there is no lock contention on ROOT objects during the run.
+
+```text
+Fill worker 0: TH1D clone 0, TH2D clone 0, TGraph clone 0, …
+Fill worker 1: TH1D clone 1, TH2D clone 1, TGraph clone 1, …
+Fill worker M: TH1D clone M, TH2D clone M, TGraph clone M, …
+        │
+        ▼ mergeAllClones() at finalize
+        │
+Master TH1D ← Add(clone 0) + Add(clone 1) + … + Add(clone M)
+Master TH2D ← Add(clone 0) + …
+Master TGraph ← append points from clone 0, clone 1, …
+        │
+        ▼ TFile::Write()
+```
+
+`mergeAllClones()` resets each master object first, then calls `Add()` for TH1/TH2/TProfile. For `TGraph`, which does not support `Add()`, points are copied sequentially from each clone.
+
+<Note>
+Never call ROOT fill methods (`Fill()`, `SetPoint()`, `etc.`) directly on histograms or graphs from your callback. Always go through the Writer's `fillXxx` methods. Direct ROOT access from multiple threads causes data corruption and crashes.
+</Note>
+
+## Checkpoint saves
+
+The Watchdog thread monitors the event consumption counter and signals `Monitor::AsyncLogger` every `checkpoint_interval` events. The checkpoint flow writes the current merged state to a checkpoint ROOT file in the checkpoint directory without stopping the run.
+
+```toml
+[monitor.intervals]
+checkpoint_interval = 100000   # events between automatic checkpoint writes
+
+[record.paths]
+checkpoint_directory = "checkpoints/"
+checkpointsInSubDir  = true
+
+[monitor.logs]
+save_checkpoints = false   # set true to enable checkpoint WatchRequests
+```
+
+<Tip>
+Enable `save_checkpoints = true` for long runs on clusters where jobs may be preempted. Each checkpoint is a fully merged, readable ROOT file — you can open it with ROOT while the analysis is still running to inspect partial results.
+</Tip>
+
+## Thread-safety rules for callbacks
+
+| Allowed in callback | Not allowed in callback |
+|---|---|
+| `writer.fillParticleEvent(...)` | `histogram->Fill(...)` directly |
+| `writer.fillTH1(key, value)` | `graph->SetPoint(...)` directly |
+| `writer.fillTree<T, B>(tree, vals)` | Opening or writing any `TFile` |
+| Reading `const Event&` / `const Feed&` fields | Modifying shared state without a lock |
+
+## Full configuration reference
+
+```toml
+[record]
+bin_count             = 500    # default histogram bin count
+hist_scaling          = 1.0    # scale factor applied to all histograms at write time
+writer_threads        = 0      # fill-worker count (0 = auto: ⌊(hw-2)/2⌋, min 1)
+writer_queue_capacity = 0      # fill-queue depth (0 = 1024)
+
+[record.paths]
+directory            = "output/Lambda_Reconstruction/"
+output_log_directory = "logs/"
+checkpoint_directory = "checkpoints/"
+serialDirectory      = true    # append serial number to output directory name
+logInSubDir          = true
+checkpointsInSubDir  = true
+
+[record.file]
+prefix = "Lambda"
+serial = true    # include serial number in filename
+energy = true    # include beam energy in filename
+events = true    # include event count in filename
+```
+
+## Example: declaring and filling histograms
+
+```cpp
+// After writer.open() — declare before writer.start()
+// HistConfig holds bin count and axis limits read from the config file.
+// Lambda::declareObjects() registers all histograms in one call:
+Lambda::configure(physParams, writer, configPath);
+
+// Or declare a single TH1D manually using Record::Writer::declareTH1:
+// (exact API parameters are determined by your HistConfig and RecordKey)
+writer.declareTH1(RecordKey{...}, histConfig);
+
+// Inside the analysis callback (called concurrently from collector/worker threads)
+writer.fillParticleEvent(HistogramSet::Validated, validatedCandidates);
+// Or for a named 1-D histogram:
+writer.fillTH1(key, value);
+```

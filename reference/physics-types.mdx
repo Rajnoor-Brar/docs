@@ -1,0 +1,242 @@
+---
+title: "Physics types, enums, and kinematics reference"
+description: "Complete reference for the Lorentz 4-vector alias, ParticleProperty and EventProperty enums, kinematics functions, branch type codes, and coordinate spec IDs."
+---
+
+The Physics layer provides the type system that all other components — Probe, Record, Config, and Lambda — use to represent and compute particle kinematics. Everything resolves to a single `Lorentz` 4-vector type. The property enums drive histogram declarations, limit maps, and the `valueOf` dispatcher. You never construct raw ROOT vectors or call ROOT methods directly in analysis code; you use the abstractions described here.
+
+## Lorentz type
+
+`Physics::Lorentz` is a type alias for `ROOT::Math::PxPyPzEVector`, defined in `Physics/Types.hh`. All four-momenta in the framework — whether read from TTree branches by Probe or constructed in Lambda — are this type.
+
+```cpp Physics/Types.hh
+namespace Physics {
+    using Lorentz = ROOT::Math::PxPyPzEVector;
+    using Column  = std::vector<Double_t>;
+}
+```
+
+The alias fixes the internal coordinate representation to `(px, py, pz, E)`. Coordinate conversion at read time is handled by Probe using the `spec` ID you supply in TOML; the `Lorentz` object you receive in a callback is always in Cartesian form regardless of source format.
+
+## ParticleProperty enum
+
+`ParticleProperty` enumerates every observable that the framework can extract from a single `Lorentz` vector. Config limit maps (`Config::ParticleLimits`) key on these values; Record uses them to name histogram axes; `valueOf()` dispatches on them at fill time.
+
+| Enumerator | String key | Extractor |
+|---|---|---|
+| `Mass_Invariant` | `"Mass_Invariant"` or `"Mass"` | `p.M()` — Lorentz-invariant mass |
+| `Mass_Transverse` | `"Mass_Transverse"` | `p.Mt()` — transverse mass |
+| `Energy_Net` | `"Energy_Net"` or `"Energy"` | `p.E()` — total energy |
+| `Energy_Transverse` | `"Energy_Transverse"` | `sqrt(pt² + m²)` — transverse energy |
+| `Momentum_Net` | `"Momentum_Net"` | `p.P()` — 3-momentum magnitude |
+| `Momentum_Transverse` | `"Momentum_Transverse"` | `p.Pt()` — transverse momentum |
+| `Momentum_X` | `"Momentum_X"` | `p.Px()` — x-component |
+| `Momentum_Y` | `"Momentum_Y"` | `p.Py()` — y-component |
+| `Momentum_Z` | `"Momentum_Z"` | `p.Pz()` — z-component |
+| `Rapidity` | `"Rapidity"` | `p.Rapidity()` — longitudinal rapidity |
+| `Pseudorapidity` | `"Pseudorapidity"` | `p.Eta()` — pseudorapidity η |
+| `Azimuthal_Angle` | `"Azimuthal_Angle"` | `p.Phi()` — azimuthal angle φ |
+| `EventIndex` | *(not mapped)* | Reserved for event-index tree branches; not extractable via `valueOf` |
+
+`EventIndex` is a reserved enumerator used for event-index tree branches and cannot be passed to `valueOf`. Calling `valueOf` with `ParticleProperty::EventIndex` throws `std::logic_error`.
+
+The string aliases (`"Mass"`, `"Energy"`) are accepted by `Physics::stringToParticleProperty` and map to the canonical enumerator.
+
+## EventProperty enum
+
+`EventProperty` enumerates observables computed from the full collection of particles in an event rather than a single vector.
+
+| Enumerator | String key | Extractor |
+|---|---|---|
+| `Multiplicity` | `"Multiplicity"` | `particles.size()` — particle count |
+
+The extractor signature for event properties is `Double_t(const std::vector<Lorentz>&)`.
+
+## valueOf dispatcher
+
+`valueOf` in `Physics/Properties.hh` dispatches a property computation through the trait table. Two overloads are provided:
+
+<ResponseField name="valueOf" type="Double_t">
+  Extracts the named property from a single Lorentz vector using the trait table for `ParticleProperty`.
+
+  ```cpp
+  Double_t valueOf(const Lorentz& particle, ParticleProperty p);
+  ```
+
+  Throws `std::logic_error` if called with `ParticleProperty::EventIndex` (not extractable from a single vector).
+</ResponseField>
+
+<ResponseField name="valueOf" type="Double_t">
+  Extracts the named event-level property from a particle collection using the trait table for `EventProperty`.
+
+  ```cpp
+  Double_t valueOf(const std::vector<Lorentz>& particles, EventProperty p);
+  ```
+</ResponseField>
+
+Example usage in an analysis callback:
+
+```cpp
+void myCallback(const Event& event, int threadId) {
+    for (const auto& proton : event.particle.at("protons")) {
+        double pt  = Physics::valueOf(proton, Physics::ParticleProperty::Momentum_Transverse);
+        double eta = Physics::valueOf(proton, Physics::ParticleProperty::Pseudorapidity);
+    }
+}
+```
+
+## Kinematics functions
+
+These free functions in `Physics/Kinematics.hh` are thin wrappers over ROOT::Math operations. They accept either `Lorentz` vectors or raw `Column` (i.e. `std::vector<Double_t>`) slices for bulk processing.
+
+<AccordionGroup>
+  <Accordion title="Scalar functions — single vectors">
+
+    <ResponseField name="fromComponents" type="Lorentz">
+      Construct a Lorentz vector from energy and Cartesian momentum components.
+
+      ```cpp
+      Lorentz fromComponents(Double_t E, Double_t px, Double_t py, Double_t pz);
+      ```
+    </ResponseField>
+
+    <ResponseField name="invariantMass (two vectors)" type="Double_t">
+      Compute the invariant mass of a two-particle system.
+
+      ```cpp
+      Double_t invariantMass(const Lorentz& a, const Lorentz& b);
+      // Returns: (a + b).M()
+      ```
+    </ResponseField>
+
+    <ResponseField name="invariantMass (components)" type="Double_t">
+      Compute the invariant mass directly from energy and momentum components. Returns 0 when `E² - p² ≤ 0`.
+
+      ```cpp
+      Double_t invariantMass(Double_t E, Double_t px, Double_t py, Double_t pz);
+      ```
+    </ResponseField>
+
+    <ResponseField name="deltaPhi" type="Double_t">
+      Signed azimuthal angle difference, wrapped to (−π, π].
+
+      ```cpp
+      Double_t deltaPhi(Double_t phi1, Double_t phi2);
+      ```
+    </ResponseField>
+
+    <ResponseField name="deltaR" type="Double_t">
+      Angular separation ΔR = √(Δη² + Δφ²) between two vectors.
+
+      ```cpp
+      Double_t deltaR(const Lorentz& a, const Lorentz& b);
+      ```
+    </ResponseField>
+
+    <ResponseField name="cosOpening" type="Double_t">
+      Cosine of the opening angle between two momentum 3-vectors. Returns 0 when either vector has zero magnitude.
+
+      ```cpp
+      Double_t cosOpening(const Lorentz& a, const Lorentz& b);
+      ```
+    </ResponseField>
+
+  </Accordion>
+
+  <Accordion title="Column functions — bulk operations">
+
+    All column functions operate element-wise over `Column` (`std::vector<Double_t>`) slices and return a `Column` of the same length.
+
+    <ResponseField name="invariantMassColumn" type="Column">
+      ```cpp
+      Column invariantMassColumn(const Column& E, const Column& px,
+                                 const Column& py, const Column& pz);
+      ```
+    </ResponseField>
+
+    <ResponseField name="transverseMomentum" type="Column">
+      ```cpp
+      Column transverseMomentum(const Column& px, const Column& py);
+      ```
+    </ResponseField>
+
+    <ResponseField name="momentum" type="Column">
+      ```cpp
+      Column momentum(const Column& px, const Column& py, const Column& pz);
+      ```
+    </ResponseField>
+
+    <ResponseField name="pseudorapidity" type="Column">
+      Computes η = −ln(tan(θ/2)), where θ = atan2(pT, pZ).
+
+      ```cpp
+      Column pseudorapidity(const Column& px, const Column& py, const Column& pz);
+      ```
+    </ResponseField>
+
+    <ResponseField name="rapidity" type="Column">
+      Computes y = 0.5 · ln((E + pZ) / (E − pZ)). Returns 0 for entries where the denominator or numerator is non-positive.
+
+      ```cpp
+      Column rapidity(const Column& E, const Column& pz);
+      ```
+    </ResponseField>
+
+    <ResponseField name="azimuthalAngle" type="Column">
+      ```cpp
+      Column azimuthalAngle(const Column& px, const Column& py);
+      ```
+    </ResponseField>
+
+  </Accordion>
+</AccordionGroup>
+
+## Branch type codes
+
+When you specify particle branches in TOML (both the inline array format and the `[probe.events.particles.<label>]` table format), each branch entry is a two-element array `["branch_name", "type_code"]`. The single-character type codes map to ROOT C++ types as follows:
+
+| Code | ROOT type | C++ type | Notes |
+|---|---|---|---|
+| `D` | `Double_t` | `double` | Most common for physics quantities |
+| `F` | `Float_t` | `float` | Lower precision; suitable for large datasets |
+| `I` | `Int_t` | `int32_t` | Signed 32-bit integer; common for index branches |
+| `i` | `UInt_t` | `uint32_t` | Unsigned 32-bit integer |
+| `L` | `Long64_t` | `int64_t` | Signed 64-bit integer |
+| `l` | `ULong64_t` | `uint64_t` | Unsigned 64-bit integer |
+| `O` | `Bool_t` | `bool` | Boolean flag |
+| `B` | `Char_t` | `char` | Signed byte |
+| `C` | — | `std::string` | String branch |
+
+These codes are the same single-character suffixes used in ROOT TTree `LeafList` declarations. Probe's branch introspector (`RootUtil::detectBranchType`) reads the trailing `/X` suffix from a TBranch title to determine the type automatically, but you must supply the code explicitly in TOML for the parser to allocate the right buffer type.
+
+## Coordinate spec IDs
+
+The `spec` key in a particle configuration selects the coordinate system in which branch data is provided. Probe reads the raw branch values and constructs a `Lorentz` vector internally, converting to `PxPyPzEVector` representation before delivering to your callback.
+
+| ID | Name | Branches (in order) |
+|---|---|---|
+| `0` | Cartesian | `pX`, `pY`, `pZ`, `E` |
+| `1` | PtEtaPhiE | `pT`, `η`, `φ`, `E` |
+| `2` | PtEtaPhiM | `pT`, `η`, `φ`, `M` |
+
+The branch order follows the four entries in the `branches` array exactly. For spec `0`, the branch labelled fourth in the array is interpreted as energy.
+
+<CodeGroup>
+
+```toml Cartesian (spec 0)
+[probe.events.particles.protons]
+tree     = "Protons"
+spec     = 0
+branches = [["pX","D"], ["pY","D"], ["pZ","D"], ["Energy","D"]]
+index    = ["Index", "I"]
+```
+
+```toml PtEtaPhiM (spec 2)
+[probe.events.particles.kaons]
+tree     = "Kaons"
+spec     = 2
+branches = [["pt","F"], ["eta","F"], ["phi","F"], ["mass","F"]]
+index    = ["EvtIdx", "I"]
+```
+
+</CodeGroup>

@@ -1,0 +1,122 @@
+---
+title: "Tune High-Energy thread pools for maximum throughput"
+description: "Understand the probe, analysis, and writer thread pools, choose between CollectorThread and WorkerThread callback modes, and tune queue capacities."
+sidebarTitle: "Threading"
+---
+
+High-Energy runs three concurrent thread pools that map onto the three pipeline stages: reading from ROOT (probe threads), invoking your analysis callback (analysis threads), and filling histogram clones (writer threads). Each pool is sized independently, and the right balance depends on your machine, your callback's complexity, and whether you use `CollectorThread` or `WorkerThread` callback mode. Configuring these correctly is the single most impactful tuning step.
+
+## The three thread pools
+
+### Probe threads (`probe`)
+
+Probe threads open the ROOT `TFile` and stream `TTree` entries. Each thread reads a disjoint segment of the file, assembles `Probe::Event` structs by joining the particle trees on the event-index branch, and either pushes the frame onto the event queue (in `CollectorThread` mode) or invokes the callback directly (in `WorkerThread` mode).
+
+The number of probe threads is set via `probe` in `[threads]` (or the legacy `probe_threads` key in `[probe]`).
+
+### Analysis threads (`analysis`)
+
+Analysis threads are collector threads that drain the event queue and invoke your callback — `Lambda::rootAnalysis` in the Lambda pipeline. They exist only when `callback_mode = "CollectorThread"`. In `WorkerThread` mode this pool is not created and the `analysis` value is ignored.
+
+The number of analysis threads is set via `analysis` in `[threads]` (or `analysis_threads` in `[probe]`).
+
+### Writer threads (`writer`)
+
+Writer threads are the fill-worker pool inside `Record::Writer`. They dequeue `FillRequest` objects posted by the analysis callback and accumulate per-worker histogram clones. On shutdown, `writer.finalize()` merges all clones into the master and writes the ROOT output file.
+
+The number of writer threads is set via `writer` in `[threads]` (or `writer_threads` in `[record]`).
+
+## Auto-sizing formula
+
+All three pools default to `0`, which triggers automatic sizing:
+
+```
+thread_count = max(1, ⌊(hardware_concurrency − 2) / 3⌋)
+```
+
+On an 8-core machine this gives `max(1, ⌊6/3⌋) = 2` threads per pool. On a 16-core machine it gives `max(1, ⌊14/3⌋) = 4`. The `−2` reserves one core for the writer watchdog thread and one for the monitor heartbeat thread.
+
+## Setting thread counts in TOML
+
+All thread counts live in one place:
+
+```toml configs/Lambda_Reconstruction.toml
+[threads]
+probe    = 4   # ROOT reader threads
+analysis = 4   # CollectorThread collectors (ignored in WorkerThread mode)
+writer   = 4   # Record fill-worker pool
+pythia   = 4   # Pythia generator threads (unused in Probe pipelines)
+```
+
+Set any value to `0` to fall back to the auto-sizing formula for that pool individually.
+
+## Choosing a callback mode
+
+`callback_mode` in `[probe]` controls how the analysis callback is invoked:
+
+```toml
+[probe]
+callback_mode = "CollectorThread"   # or "WorkerThread"
+```
+
+| Mode | Behaviour | `analysis` threads |
+|------|-----------|--------------------|
+| `CollectorThread` | Probe threads push events onto a bounded queue; analysis threads pop and invoke the callback concurrently. | Used |
+| `WorkerThread` | Each probe thread invokes the callback itself immediately after assembling the event. | Ignored |
+
+Use `CollectorThread` when your callback does significant work (e.g. the full Lambda reconstruction loop). The separate queue decouples I/O from computation, so probe threads are never stalled waiting for the callback to finish. Use `WorkerThread` for lightweight callbacks where the overhead of the queue outweighs the concurrency benefit, or when you need callback invocations to be strictly serialized per reader thread.
+
+<Note>
+In `WorkerThread` mode, the callback runs on a probe thread. The `Record::Writer` fill queue is still asynchronous, so histogram fills are non-blocking regardless of callback mode.
+</Note>
+
+## Queue capacities
+
+Two queue-depth settings govern back-pressure between stages:
+
+```toml
+[probe]
+queue_capacity = 0    # depth of the event queue between probe and analysis threads
+                      # 0 = 10 × probe_threads
+
+[record]
+writer_queue_capacity = 0   # depth of the FillRequest queue
+                            # 0 = Writer internal default (1024)
+```
+
+A shallow `queue_capacity` reduces memory usage but increases probe-thread stall time if analysis threads fall behind. A deep queue smooths bursts at the cost of higher peak memory. The default (`10 × probe_threads`) works well in most cases.
+
+## Recommended starting values
+
+| Machine | `probe` | `analysis` | `writer` | Notes |
+|---------|---------|------------|---------|-------|
+| 8-core | 3 | 3 | 2 | Leaves 2 cores for watchdog + heartbeat |
+| 16-core | 5 | 5 | 4 | — |
+| 32-core | 10 | 10 | 8 | Increase `queue_capacity` to 200+ |
+| 4-core | 1 | 1 | 1 | Auto-sizing formula minimum |
+
+These are starting points. Profile with the `MONITOR_SCOPE_TIMER` output (printed to stdout at the end of each run by `Monitor::TimerRegistry::instance().dump(std::cout)`) to see where time is actually spent.
+
+## Full example: 16-core workstation
+
+```toml configs/Lambda_Reconstruction.toml
+[events]
+event_count = 1_000_000
+
+[threads]
+probe    = 5
+analysis = 5
+writer   = 4
+
+[probe]
+input_file    = "output/Lambda_Data/_08/Lambda_Recons_7000GeV_10M.root"
+callback_mode = "CollectorThread"
+queue_capacity = 100
+
+[record]
+writer_queue_capacity = 2048
+```
+
+<Tip>
+If probe threads are consistently stalled (visible in the heartbeat log as low probe throughput with a full queue), increase `analysis` threads or switch to `WorkerThread` mode. If writer threads are stalled, increase `writer` threads or raise `writer_queue_capacity`.
+</Tip>

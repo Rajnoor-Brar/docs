@@ -1,0 +1,54 @@
+---
+title: "High-Energy: C++17 Physics Analysis Framework"
+description: "High-Energy is a multi-threaded C++17 framework for reconstructing high-energy physics events from ROOT TTrees with TOML-driven configuration."
+---
+
+High-Energy gives you a complete pipeline for parallel ROOT TTree analysis — from reading raw Monte Carlo data through histogram filling to polished plot output. Configure every stage with TOML, wire in your analysis callback, and let the framework handle threading, checkpointing, and progress reporting.
+
+<CardGroup cols={2}>
+  <Card title="Quick Start" icon="rocket" href="/quickstart">
+    Build your first analysis pipeline in minutes with the Lambda reconstruction example.
+  </Card>
+  <Card title="Installation" icon="wrench" href="/installation">
+    Install ROOT, Pythia8, and toml++ dependencies, then compile with the provided Makefile.
+  </Card>
+  <Card title="Configuration" icon="sliders" href="/configuration/overview">
+    Learn how TOML config files drive every stage: probe threads, histogram bins, output paths, and more.
+  </Card>
+  <Card title="Core Concepts" icon="book" href="/concepts/pipeline">
+    Understand the three-stage Probe → Record → Monitor pipeline and how data flows through it.
+  </Card>
+</CardGroup>
+
+## What you can build
+
+High-Energy is designed for physicists and analysts who need to process large ROOT TTree datasets — millions of events — in parallel, accumulate histograms thread-safely, and render publication-quality plots without writing boilerplate threading code.
+
+<CardGroup cols={3}>
+  <Card title="Parallel Streaming" icon="bolt" href="/concepts/probe-streaming">
+    Stream events across multiple reader threads with configurable callback modes.
+  </Card>
+  <Card title="Thread-Safe Writing" icon="database" href="/concepts/record-writer">
+    Fill histograms and TTrees concurrently with automatic clone-merge at finalization.
+  </Card>
+  <Card title="Plot Rendering" icon="chart-bar" href="/guides/paint-histograms">
+    Render ROOT histograms to PNG/PDF/SVG with TOML-defined style presets.
+  </Card>
+</CardGroup>
+
+## Getting started
+
+<Steps>
+  <Step title="Install dependencies">
+    Install ROOT 6, Pythia8, and toml++ on your system. See the [Installation guide](/installation) for package manager commands and version requirements.
+  </Step>
+  <Step title="Configure your analysis">
+    Copy `configs/Lambda_Reconstruction.toml` as a starting point and set your input file path, thread counts, and output directory.
+  </Step>
+  <Step title="Write your callback">
+    Implement an analysis function with signature `void(const Probe::Event&, int threadId)` and register histograms with `Record::Writer`.
+  </Step>
+  <Step title="Build and run">
+    Run `make _Lambda_Reconstruction` and execute the binary. The Monitor prints live progress, saves checkpoints, and writes the final ROOT output file.
+  </Step>
+</Steps>

@@ -1,0 +1,89 @@
+---
+title: "Configure High-Energy with a TOML file"
+description: "A single TOML file drives the entire High-Energy pipeline. Learn how each section maps to a pipeline stage and how Config::configure wires them together."
+---
+
+Every High-Energy analysis run is controlled by one TOML file. At startup, `Config::configure<ProbePipeline>(path)` reads that file, resolves thread counts, loads histogram limits, and distributes typed configuration structs to `Probe`, `Record`, and `Monitor` — in the correct order, without any manual wiring on your part.
+
+The file is organised into six top-level sections. Each section maps to a distinct part of the pipeline:
+
+| Section | Controls |
+|---|---|
+| `[events]` | How many events to process |
+| `[threads]` | Worker-pool sizes for every stage |
+| `[probe]` | Input ROOT file, particle specs, and callback behaviour |
+| `[record]` | Output paths, histogram parameters, and run metadata |
+| `[monitor]` | Progress reporting intervals and log flags |
+| `[pythia]` | Beam energy and generator settings (generation pipelines only) |
+| `[lambda]` | Module-specific parameters including histogram limit file selection |
+
+## How `Config::configure` works
+
+`Config::configure<ProbePipeline>(path)` is the single facade you call from your driver. It:
+
+1. Parses the TOML file into `Watch`, `Register`, and `Events` structs.
+2. Loads the limits file named by `[lambda].hist_limits` and populates `Register.particleLimits` / `Register.eventLimits`.
+3. Calls `configureProbe()`, `configureWriter()`, and `configureMonitor()` in the correct dependency order.
+4. Returns a fully wired `ProbePipeline` ready to call `streamEvents()`, `streamFeed()`, or `stream()`.
+
+You never need to manage configuration struct lifetimes or call the sub-configurators yourself.
+
+## Minimal working configuration
+
+The example below is sufficient to run a reconstruction analysis over 100 000 events from an existing ROOT file.
+
+<CodeGroup>
+
+```toml minimal.toml
+[events]
+event_count = 100000
+
+[probe]
+input_file = "output/Lambda_Data/_08/Lambda_Recons_7000GeV_10M.root"
+
+[probe.events.particles.protons]
+tree     = "Protons"
+spec     = 0
+branches = [["pX","D"], ["pY","D"], ["pZ","D"], ["Energy","D"]]
+index    = ["Index", "I"]
+
+[probe.events.particles.pions]
+tree     = "Pions"
+spec     = 0
+branches = [["pX","D"], ["pY","D"], ["pZ","D"], ["Energy","D"]]
+index    = ["Index", "I"]
+
+[record]
+bin_count = 500
+
+[record.paths]
+directory = "output/my_analysis/"
+
+[record.file]
+prefix = "MyAnalysis"
+events = true
+```
+
+</CodeGroup>
+
+Any key that is absent falls back to a built-in default. You only need to specify what differs from those defaults.
+
+## Section reference
+
+<CardGroup cols={2}>
+  <Card title="Events and threads" icon="sliders" href="/configuration/events">
+    Set the event cap and tune worker-pool sizes for probe, analysis, writer, and Pythia threads.
+  </Card>
+  <Card title="Probe" icon="magnifying-glass" href="/configuration/probe">
+    Point to your ROOT file, describe each particle tree, and choose a callback mode.
+  </Card>
+  <Card title="Record" icon="database" href="/configuration/record">
+    Configure output paths, file naming, histogram parameters, and run metadata.
+  </Card>
+  <Card title="Monitor" icon="chart-line" href="/configuration/monitor">
+    Tune progress-print intervals, checkpoint frequency, and log file flags.
+  </Card>
+  <Card title="Limits" icon="ruler" href="/configuration/limits">
+    Define histogram axis ranges by named `RangeSize` levels and select a limits file.
+  </Card>
+</CardGroup>

@@ -1,0 +1,507 @@
+---
+title: "Paint TOML configuration complete reference"
+description: "Full reference for every key in the [paint] TOML section, including global options, per-result table keys, source entries, and all default style sub-tables."
+---
+
+The Paint subsystem reads a TOML file to produce ROOT histogram plots without running the analysis pipeline. You specify which ROOT objects to render, how to style them, and where to write the output images — all through TOML. The entry point is the `_Paint.cc` driver, which calls `Paint::Illustrator` to load the book, resolve ROOT objects from a `.root` file, render each result, and save the output. This page documents every key the parser accepts.
+
+## Global [paint] keys
+
+These keys sit directly under `[paint]` and apply to the whole rendering job.
+
+<ParamField path="default_style" type="string" default='"configs/defaults/Paint.toml"'>
+  Path to a TOML file containing fallback style values. This file is merged first; your per-result keys override it. Set to an empty string `""` to disable the merge entirely.
+</ParamField>
+
+<ParamField path="root_file" type="string" required>
+  Path to the ROOT file from which all sources are resolved. All `path` entries in `sources` are looked up relative to the root of this file's directory structure.
+</ParamField>
+
+<ParamField path="result_dir" type="string" default='"results"'>
+  Output directory for rendered images. Created if it does not exist.
+</ParamField>
+
+<ParamField path="results" type="string[]" required>
+  Ordered list of result names to render. Each name must correspond to a `[paint.<name>]` table in the same or merged TOML file.
+</ParamField>
+
+<ParamField path="formats" type="string[]" default='["png"]'>
+  List of output formats for all results. Accepted values: `"png"`, `"pdf"`, `"svg"`, `"root"`. Individual results can override this list.
+</ParamField>
+
+<ParamField path="overwrite" type="boolean" default="true">
+  When `false`, the renderer aborts if an output file already exists instead of replacing it.
+</ParamField>
+
+<ParamField path="image_scale" type="number" default="1">
+  Multiplier applied to the canvas `width` and `height` when exporting raster images. Use `4` for high-DPI output.
+</ParamField>
+
+<ParamField path="text_scale" type="number" default="1.0">
+  Multiplier applied to all text sizes (axis labels, stats box, legend, title) at render time.
+</ParamField>
+
+<ParamField path="brush_scale" type="number" default="1.0">
+  Multiplier applied to line widths and marker sizes at render time. Override per result to reduce visual weight in overlay plots.
+</ParamField>
+
+## Per-result [paint.\<name\>] keys
+
+Each entry in `results` must have a corresponding `[paint.<name>]` table. These keys control the layout, sources, and style of an individual result.
+
+<AccordionGroup>
+  <Accordion title="Layout and output">
+
+    <ParamField path="mode" type="string" default='"single"'>
+      Render mode. One of:
+
+      - `"single"` — one histogram on one pad
+      - `"overlay"` — multiple histograms drawn on the same pad, each from a separate source
+      - `"grid"` — `rows × cols` pad grid, one source per cell
+    </ParamField>
+
+    <ParamField path="rows" type="number" default="0">
+      Number of rows in grid mode. `0` means infer from the source count.
+    </ParamField>
+
+    <ParamField path="cols" type="number" default="0">
+      Number of columns in grid mode. `0` means infer from the source count.
+    </ParamField>
+
+    <ParamField path="title" type="string">
+      Human-readable title displayed on the histogram. Shown inside the ROOT title box when `title_box.show = true`.
+    </ParamField>
+
+    <ParamField path="output_name" type="string">
+      Base filename for the output image, without extension. Defaults to the result's table key name if omitted.
+    </ParamField>
+
+    <ParamField path="formats" type="string[]">
+      Per-result format override. When set, replaces the global `[paint].formats` for this result only.
+    </ParamField>
+
+  </Accordion>
+
+  <Accordion title="Source selection">
+
+    <ParamField path="source_type" type="string" default='"H1"'>
+      ROOT object type to retrieve from the file. Accepted values: `"H1"` (TH1), `"H2"` (TH2), `"TProfile"`, `"Graph"` (TGraph).
+    </ParamField>
+
+    <ParamField path="sources" type="object[]">
+      Explicit list of source objects to draw. Each entry is an inline table with the following keys:
+
+      <ParamField path="path" type="string" required>
+        Path to the ROOT object within the file, using `/` as a directory separator. Example: `"Validated/Validated_Mass_Invariant_Hist"`.
+      </ParamField>
+
+      <ParamField path="label" type="string">
+        Legend entry label for this source. Required when the result's legend is enabled.
+      </ParamField>
+
+      <ParamField path="draw_option" type="string">
+        Per-source ROOT draw option (e.g. `"HIST"`, `"E1"`, `"SAME"`). Overrides the result-level `draw_option`.
+      </ParamField>
+    </ParamField>
+
+    <ParamField path="source_search" type="string">
+      Glob pattern to search for ROOT objects within the file. All matching objects are collected as sources in discovery order. Cannot be used together with `sources`.
+
+      ```toml
+      source_search = "Mass_*"
+      ```
+    </ParamField>
+
+  </Accordion>
+
+  <Accordion title="Style overrides">
+
+    These keys override the corresponding values in `[paint.default]` for this result only.
+
+    <ParamField path="palette" type="string[]">
+      Ordered list of ROOT color strings assigned to successive sources in overlay and grid modes. Example: `["kBlue-6", "kRed-4", "kGreen-6"]`.
+    </ParamField>
+
+    <ParamField path="draw_option" type="string" default='"HIST"'>
+      ROOT draw option string applied to all sources in this result. Per-source `draw_option` takes precedence.
+    </ParamField>
+
+    <ParamField path="line_color" type="string">
+      ROOT color string for the histogram line. Example: `"kRed-4"`.
+    </ParamField>
+
+    <ParamField path="fill_color" type="string">
+      ROOT color string for the histogram fill. Example: `"kRed-7"`.
+    </ParamField>
+
+    <ParamField path="fill_style" type="number">
+      ROOT fill style code. `0` = hollow, `1001` = solid, `3003` = hatched.
+    </ParamField>
+
+    <ParamField path="brush_scale" type="number">
+      Per-result brush scale multiplier. Useful for reducing line width in overlay plots (e.g. `brush_scale = 0.5`).
+    </ParamField>
+
+  </Accordion>
+
+  <Accordion title="Preset inheritance">
+
+    These keys copy style sub-sections from another named result table instead of re-specifying them.
+
+    <ParamField path="use" type="string">
+      Inherit the full style of another `[paint.<preset>]` table. All keys from the named table are merged before this table's own keys are applied.
+    </ParamField>
+
+    <ParamField path="axis_use" type="string">
+      Copy only the `axis` sub-table from the named result.
+    </ParamField>
+
+    <ParamField path="canvas_use" type="string">
+      Copy only the `canvas` sub-table from the named result.
+    </ParamField>
+
+    <ParamField path="stats_use" type="string">
+      Copy only the `stats` sub-table from the named result.
+    </ParamField>
+
+    <ParamField path="legend_use" type="string">
+      Copy only the `legend` sub-table from the named result.
+    </ParamField>
+
+    <ParamField path="title_use" type="string">
+      Copy only the `title_box` sub-table from the named result.
+    </ParamField>
+
+  </Accordion>
+</AccordionGroup>
+
+## [paint.default] — fallback style
+
+`[paint.default]` provides the baseline style applied to all results before per-result overrides. You can place it in `default_style` file or in the main config.
+
+<AccordionGroup>
+  <Accordion title="[paint.default] top-level keys">
+
+    <ParamField path="line_color" type="string" default='"kBlue-6"'>
+      Default histogram line color. Accepts ROOT named color strings with optional offset (e.g. `"kBlue-6"`, `"kRed+2"`, `"kBlack"`).
+    </ParamField>
+
+    <ParamField path="line_width" type="number" default="2">
+      Default line width in ROOT units. Multiplied by `brush_scale` at render time.
+    </ParamField>
+
+    <ParamField path="line_style" type="number" default="1">
+      ROOT line style code. `1` = solid, `2` = dashed, `3` = dotted.
+    </ParamField>
+
+    <ParamField path="fill_color" type="string" default='"kBlue-7"'>
+      Default histogram fill color.
+    </ParamField>
+
+    <ParamField path="fill_style" type="number" default="3003">
+      ROOT fill style code applied to all histograms.
+    </ParamField>
+
+    <ParamField path="marker_color" type="string" default='"kBlack"'>
+      Default marker color for graph and scatter plots.
+    </ParamField>
+
+    <ParamField path="marker_style" type="number" default="20">
+      ROOT marker style code. `20` = filled circle.
+    </ParamField>
+
+    <ParamField path="marker_size" type="number" default="1.0">
+      Marker size in ROOT units. Multiplied by `brush_scale` at render time.
+    </ParamField>
+
+    <ParamField path="draw_option" type="string" default='"HIST"'>
+      Default ROOT draw option string.
+    </ParamField>
+
+    <ParamField path="minimum" type="number" default="0.0">
+      Histogram Y-axis minimum. `0.0` delegates to ROOT's automatic range.
+    </ParamField>
+
+    <ParamField path="maximum" type="number" default="0.0">
+      Histogram Y-axis maximum. `0.0` delegates to ROOT's automatic range.
+    </ParamField>
+
+    <ParamField path="log_x" type="boolean" default="false">
+      Enable logarithmic X axis.
+    </ParamField>
+
+    <ParamField path="log_y" type="boolean" default="false">
+      Enable logarithmic Y axis.
+    </ParamField>
+
+    <ParamField path="log_z" type="boolean" default="false">
+      Enable logarithmic Z axis (TH2 only).
+    </ParamField>
+
+    <ParamField path="grid_x" type="boolean" default="false">
+      Draw grid lines on the X axis.
+    </ParamField>
+
+    <ParamField path="grid_y" type="boolean" default="false">
+      Draw grid lines on the Y axis.
+    </ParamField>
+
+  </Accordion>
+
+  <Accordion title="[paint.default.axis] — axis style">
+
+    <ParamField path="title_font" type="number" default="43">
+      ROOT font code for axis titles. Font `43` is Helvetica with absolute pixel size.
+    </ParamField>
+
+    <ParamField path="label_font" type="number" default="43">
+      ROOT font code for axis tick labels.
+    </ParamField>
+
+    <ParamField path="title_size" type="number" default="27.0">
+      Axis title size in pixels (when using font code `43`).
+    </ParamField>
+
+    <ParamField path="label_size" type="number" default="20.0">
+      Axis label size in pixels.
+    </ParamField>
+
+    <ParamField path="offset_x" type="number" default="1.1">
+      Title offset along the X axis.
+    </ParamField>
+
+    <ParamField path="offset_y" type="number" default="1.35">
+      Title offset along the Y axis.
+    </ParamField>
+
+    <ParamField path="offset_z" type="number" default="1.1">
+      Title offset along the Z axis (TH2 color axis).
+    </ParamField>
+
+    <ParamField path="center_titles" type="boolean" default="true">
+      Center axis titles along their axis.
+    </ParamField>
+
+    <ParamField path="max_digits_y" type="number" default="3">
+      Maximum number of digits shown on Y-axis labels before switching to scientific notation.
+    </ParamField>
+
+    <ParamField path="title_x" type="string" default='""'>
+      X-axis title text. Empty string leaves the histogram's built-in title unchanged.
+    </ParamField>
+
+    <ParamField path="title_y" type="string" default='""'>
+      Y-axis title text.
+    </ParamField>
+
+    <ParamField path="title_z" type="string" default='""'>
+      Z-axis title text (TH2 color axis).
+    </ParamField>
+
+  </Accordion>
+
+  <Accordion title="[paint.default.canvas] — canvas geometry">
+
+    <ParamField path="width" type="number" default="900">
+      Canvas width in pixels before `image_scale` is applied.
+    </ParamField>
+
+    <ParamField path="height" type="number" default="600">
+      Canvas height in pixels before `image_scale` is applied.
+    </ParamField>
+
+    <ParamField path="margin_l" type="number" default="0.12">
+      Left margin as a fraction of canvas width.
+    </ParamField>
+
+    <ParamField path="margin_r" type="number" default="0.05">
+      Right margin as a fraction of canvas width.
+    </ParamField>
+
+    <ParamField path="margin_b" type="number" default="0.12">
+      Bottom margin as a fraction of canvas height.
+    </ParamField>
+
+    <ParamField path="margin_t" type="number" default="0.08">
+      Top margin as a fraction of canvas height.
+    </ParamField>
+
+    <ParamField path="ticks_x" type="boolean" default="true">
+      Draw tick marks on both sides of the X axis.
+    </ParamField>
+
+    <ParamField path="ticks_y" type="boolean" default="true">
+      Draw tick marks on both sides of the Y axis.
+    </ParamField>
+
+  </Accordion>
+
+  <Accordion title="[paint.default.stats] — statistics box">
+
+    <ParamField path="show" type="boolean" default="true">
+      Show the ROOT statistics box on the pad.
+    </ParamField>
+
+    <ParamField path="opt_stat" type="string" default='"emr"'>
+      ROOT stat option string controlling which statistics to display. Common characters: `n`=name, `e`=entries, `m`=mean, `r`=RMS, `x`=mean X/Y (TH2), `s`=skewness.
+    </ParamField>
+
+    <ParamField path="x" type="number" default="0.92">
+      X position of the stats box right edge in NDC coordinates (0–1).
+    </ParamField>
+
+    <ParamField path="y" type="number" default="0.89">
+      Y position of the stats box top edge in NDC coordinates.
+    </ParamField>
+
+    <ParamField path="width" type="number" default="0.18">
+      Stats box width in NDC.
+    </ParamField>
+
+    <ParamField path="height" type="number" default="0.10">
+      Stats box height in NDC.
+    </ParamField>
+
+    <ParamField path="text_font" type="number" default="43">
+      ROOT font code for stats text.
+    </ParamField>
+
+    <ParamField path="text_size" type="number" default="12.0">
+      Stats text size in pixels.
+    </ParamField>
+
+    <ParamField path="border_size" type="number" default="2">
+      Stats box border width. `0` = no border.
+    </ParamField>
+
+    <ParamField path="fill_color" type="number" default="0">
+      Stats box fill color. `0` = transparent.
+    </ParamField>
+
+    <ParamField path="fill_style" type="number" default="1001">
+      Stats box fill style. `1001` = solid (transparent when `fill_color = 0`).
+    </ParamField>
+
+  </Accordion>
+
+  <Accordion title="[paint.default.legend] — legend box">
+
+    <ParamField path="show" type="boolean" default="false">
+      Show the legend box. Override to `true` in individual result tables that use multiple sources.
+    </ParamField>
+
+    <ParamField path="x1" type="number" default="0.65">
+      Left edge of the legend box in NDC.
+    </ParamField>
+
+    <ParamField path="y1" type="number" default="0.75">
+      Bottom edge of the legend box in NDC.
+    </ParamField>
+
+    <ParamField path="x2" type="number" default="0.88">
+      Right edge of the legend box in NDC.
+    </ParamField>
+
+    <ParamField path="y2" type="number" default="0.88">
+      Top edge of the legend box in NDC.
+    </ParamField>
+
+    <ParamField path="text_font" type="number" default="43">
+      ROOT font code for legend text.
+    </ParamField>
+
+    <ParamField path="text_size" type="number" default="14.0">
+      Legend text size in pixels.
+    </ParamField>
+
+    <ParamField path="border_size" type="number" default="0">
+      Legend box border width.
+    </ParamField>
+
+    <ParamField path="fill_style" type="number" default="0">
+      Legend fill style. `0` = hollow.
+    </ParamField>
+
+  </Accordion>
+
+  <Accordion title="[paint.default.title_box] — histogram title box">
+
+    <ParamField path="show" type="boolean" default="true">
+      Show ROOT's title box above the pad.
+    </ParamField>
+
+    <ParamField path="text_font" type="number" default="43">
+      ROOT font code for the title text.
+    </ParamField>
+
+    <ParamField path="text_size" type="number" default="24.0">
+      Title text size in pixels.
+    </ParamField>
+
+    <ParamField path="border_size" type="number" default="0">
+      Title box border width.
+    </ParamField>
+
+    <ParamField path="fill_style" type="number" default="0">
+      Title box fill style.
+    </ParamField>
+
+  </Accordion>
+</AccordionGroup>
+
+## Color strings
+
+All `*_color` keys accept ROOT named color strings with optional integer offsets. The syntax is `"kName±offset"` where the base name is a ROOT `EColor` constant.
+
+Common examples from production configs:
+
+| String | Description |
+|---|---|
+| `"kBlue-6"` | Medium blue (lighter than `kBlue`) |
+| `"kBlue-7"` | Light blue fill |
+| `"kRed-4"` | Dark red |
+| `"kRed-6"` | Medium red |
+| `"kRed-7"` | Light red fill |
+| `"kGreen-6"` | Medium green |
+| `"kBlack"` | Black |
+
+## Complete example
+
+The following is a minimal working Paint config that renders a single histogram and an overlay of three histograms from the same ROOT file.
+
+```toml Paint.toml
+[paint]
+default_style = "configs/defaults/Paint.toml"
+root_file     = "output/Lambda_Reconstruction/_41/Lambda_Recons_100k.root"
+result_dir    = "results/hist"
+results       = ["mass_invariant", "mass_overlay"]
+formats       = ["png"]
+overwrite     = true
+image_scale   = 4
+text_scale    = 1.0
+brush_scale   = 1.0
+
+[paint.mass_invariant]
+mode        = "single"
+source_type = "H1"
+title       = "Validated Mass Invariant"
+output_name = "mass_invariant"
+sources     = [{ path = "Validated/Validated_Mass_Invariant_Hist", label = "Validated" }]
+
+[paint.mass_overlay]
+mode        = "overlay"
+source_type = "H1"
+title       = "Mass Invariant Distribution"
+output_name = "mass"
+fill_style  = 0
+brush_scale = 0.5
+palette     = ["kBlue-6", "kRed-6", "kGreen-6"]
+sources = [
+    { path = "Unvalidated/Unvalidated_Mass_Invariant_Hist", label = "Unvalidated" },
+    { path = "Validated/Validated_Mass_Invariant_Hist",     label = "Validated"   },
+    { path = "Selected/Selected_Mass_Invariant_Hist",       label = "Selected"    },
+]
+
+[paint.mass_overlay.legend]
+show = true
+```

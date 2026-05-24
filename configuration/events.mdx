@@ -1,0 +1,72 @@
+---
+title: "Event count and thread pool configuration"
+description: "Control how many events High-Energy processes and set independent worker-pool sizes for probe, analysis, writer, and Pythia threads from a single TOML section."
+---
+
+The `[events]` and `[threads]` sections are the two fastest knobs to reach when tuning a run. `[events]` caps the number of physics events the pipeline processes; `[threads]` lets you allocate CPU resources independently to each pipeline stage without touching code.
+
+## `[events]`
+
+<ParamField path="event_count" type="number" default="0">
+  Number of events to process. Set to `0` to process every event in the input file.
+</ParamField>
+
+<CodeGroup>
+
+```toml process all events
+[events]
+event_count = 0
+```
+
+```toml process 100 000 events
+[events]
+event_count = 100000
+```
+
+</CodeGroup>
+
+## `[threads]`
+
+The `[threads]` section sets worker-pool sizes for all four pipeline stages in one place. Per-section keys (`probe_threads`, `writer_threads`, etc. inside `[probe]` and `[record]`) override these values when present. Setting any count to `0` — or omitting it entirely — activates auto-sizing.
+
+**Auto-sizing rule:** `floor((hardware_concurrency - 2) / 3)`, with a minimum of `1`. For example, on a 16-core machine that yields `floor(14 / 3) = 4` threads per pool.
+
+<ParamField path="probe" type="number" default="0">
+  Number of ROOT reader threads. Each reader thread opens the input `TFile` independently and reads a partition of the TTree.
+</ParamField>
+
+<ParamField path="analysis" type="number" default="0">
+  Number of collector (callback) threads. Only used in `CollectorThread` mode; ignored in `WorkerThread` mode. When set to `0`, defaults to the same count as `probe`.
+</ParamField>
+
+<ParamField path="writer" type="number" default="0">
+  Number of fill-worker threads inside `Record::Writer`. Each worker maintains its own per-clone ROOT object pool and dequeues `FillRequest` items concurrently.
+</ParamField>
+
+<ParamField path="pythia" type="number" default="0">
+  Number of Pythia generator threads. Only active in generation pipelines; has no effect in probe-only analyses.
+</ParamField>
+
+<CodeGroup>
+
+```toml Lambda_Reconstruction.toml
+[threads]
+probe    = 4
+analysis = 4
+writer   = 4
+pythia   = 4
+```
+
+```toml auto-size everything
+[threads]
+probe    = 0
+analysis = 0
+writer   = 0
+pythia   = 0
+```
+
+</CodeGroup>
+
+<Note>
+  The `[threads]` section is a convenience shorthand. If you need to set thread counts for only one stage, you can use `probe_threads` inside `[probe]` or `writer_threads` inside `[record]` instead.
+</Note>

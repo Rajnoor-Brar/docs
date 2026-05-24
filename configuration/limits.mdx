@@ -1,0 +1,130 @@
+---
+title: "Configure histogram axis limits and ranges"
+description: "Define histogram axis ranges using named RangeSize levels in a limits TOML file, then select that file from your analysis config with the hist_limits key."
+---
+
+Histogram axis ranges in High-Energy are defined separately from the main analysis config. You create one or more `[record.limits.<Name>]` tables in a dedicated TOML file, and each table provides five named range levels. Your analysis then selects that file by name using `[lambda].hist_limits`. This two-file design lets you share a single set of axis ranges across multiple analyses while keeping each analysis config focused on pipeline settings.
+
+## Selecting a limits file
+
+Set `hist_limits` in the `[lambda]` section of your analysis config to the name or path of the limits file:
+
+<ParamField path="hist_limits" type="string" default="all">
+  Name or path of the limits TOML file. A bare name (without a path separator or `.toml` extension) is expanded by `resolveLimitsPath()` to `configs/<name>.toml`. For example, `"Lambda_Limits"` resolves to `configs/Lambda_Limits.toml`. The special value `"all"` resolves to `configs/all.toml`, which makes the canonical reference file self-contained.
+</ParamField>
+
+<CodeGroup>
+
+```toml using a named limits file
+[lambda]
+hist_limits = "Lambda_Limits"
+```
+
+```toml using the canonical self-contained reference
+[lambda]
+hist_limits = "all"
+```
+
+</CodeGroup>
+
+## `[record.limits.<Name>]` tables
+
+Each `[record.limits.<Name>]` table defines the axis bounds for one named quantity at five zoom levels. `Config::loadLimitsFile` reads these tables and populates `Register.particleLimits` and `Register.eventLimits`, keyed by `ParticleProperty` and `EventProperty` enums respectively.
+
+Every table must provide all five levels. Each level is a `[low, high]` array in GeV (for mass, energy, and momentum quantities) or the natural unit of the property.
+
+| Level | Purpose |
+|---|---|
+| `Minute` | Tightest zoom — resolves fine structure near the signal peak |
+| `Small` | Narrow window — captures the signal with modest sideband |
+| `Moderate` | Default working range for most analyses |
+| `Large` | Wide range — shows the full decay-product spectrum |
+| `Extreme` | Maximum range — includes all background and tails |
+
+## `Lambda_Limits.toml` example
+
+The values below are the actual ranges used in the Lambda reconstruction analysis.
+
+<CodeGroup>
+
+```toml Lambda_Limits.toml — mass and energy
+[record.limits.Mass_Invariant]
+Minute   = [1.112, 1.118]
+Small    = [1.108, 1.122]
+Moderate = [1.08,  1.15]
+Large    = [0.9,   1.3]
+Extreme  = [0.5,   2.0]
+
+[record.limits.Energy_Net]
+Minute   = [1.11, 1.12]
+Small    = [1.05, 1.20]
+Moderate = [0.9,  1.8]
+Large    = [0.8,  3.0]
+Extreme  = [0.5,  6.0]
+```
+
+```toml Lambda_Limits.toml — momentum
+[record.limits.Momentum_Net]
+Minute   = [0.0, 1.0]
+Small    = [0.0, 1.5]
+Moderate = [0.0, 3.0]
+Large    = [0.0, 5.0]
+Extreme  = [0.0, 10.0]
+
+[record.limits.Momentum_Transverse]
+Minute   = [0.0, 0.7]
+Small    = [0.0, 1.2]
+Moderate = [0.0, 2.0]
+Large    = [0.0, 3.5]
+Extreme  = [0.0, 6.0]
+
+[record.limits.Momentum_Z]
+Minute   = [-1.0,  1.0]
+Small    = [-2.0,  2.0]
+Moderate = [-3.0,  3.0]
+Large    = [-5.0,  5.0]
+Extreme  = [-10.0, 10.0]
+```
+
+```toml Lambda_Limits.toml — pseudorapidity
+[record.limits.Pseudorapidity]
+Minute   = [-1.0, 1.0]
+Small    = [-1.5, 1.5]
+Moderate = [-2.5, 2.5]
+Large    = [-4.0, 4.0]
+Extreme  = [-6.0, 6.0]
+```
+
+</CodeGroup>
+
+## Flat limits tables
+
+In addition to the five-level `RangeSize` format, a limits file can also contain flat tables that map property names directly to a `[low, high]` range without level selection. These are used when you want a single fixed axis range per named set rather than five adjustable levels.
+
+<CodeGroup>
+
+```toml Lambda_Limits.toml — flat tables
+[record.limits.Unvalidated]
+Mass               = [1, 2]
+Energy             = [0, 10]
+Momentum_Net       = [0, 10]
+Momentum_Transverse= [0, 5]
+Momentum_Z         = [0, 10]
+Pseudorapidity     = [-15, 15]
+Multiplicity       = [0, 5000]
+
+[record.limits.Selected]
+Mass               = [1, 1.3]
+Energy             = [0, 100]
+Momentum_Net       = [0, 100]
+Momentum_Transverse= [0, 5]
+Momentum_Z         = [0, 100]
+Pseudorapidity     = [-15, 15]
+Multiplicity       = [0, 150]
+```
+
+</CodeGroup>
+
+<Note>
+  The quantity names in `[record.limits.*]` tables must match the string representations of the `Physics::ParticleProperty` and `Physics::EventProperty` enum values. Any unrecognised name is silently skipped during loading.
+</Note>

@@ -1,0 +1,160 @@
+---
+title: "High-Energy quickstart: run Lambda reconstruction"
+description: "Run the Lambda reconstruction example end-to-end: clone the repo, point the TOML config at your ROOT file, compile with make, and inspect the output histograms."
+---
+
+This guide walks you through running the Lambda reconstruction pipeline — the canonical High-Energy example — from a fresh clone to a finished ROOT output file. By the end you will have compiled `_Lambda_Reconstruction.exe`, processed a ROOT TTree containing proton and pion branches, and produced a file of invariant-mass histograms in `output/Lambda_Reconstruction/`.
+
+## Prerequisites
+
+Before you start, make sure you have the following installed and available on your `PATH`:
+
+- **ROOT 6.x** — `root-config` must be executable
+- **Pythia8 3.x** — `pythia8-config` must be executable (used at link time even for ROOT-only runs)
+- **toml++ 3.x** — `pkg-config --cflags --libs tomlplusplus` must succeed
+- **A ROOT input file** — a `.root` file containing `Protons` and `Pions` TTrees with `pX`, `pY`, `pZ`, `Energy`, and `Index` branches
+
+<Note>
+  The `datasets/` directory is not tracked in the repository. Generate your own input file with `make _Lambda_Data` and run the resulting binary, or point `input_file` at any compatible ROOT file you already have.
+</Note>
+
+## Steps
+
+<Steps>
+  <Step title="Clone the repository">
+    Clone the High-Energy repository and enter the project root.
+
+    ```bash
+    git clone https://github.com/Rajnoor-Brar/High-Energy.git
+    cd High-Energy
+    ```
+  </Step>
+
+  <Step title="Set the input file path">
+    Open `configs/Lambda_Reconstruction.toml` and update the `input_file` key under `[probe]` to point at your ROOT file.
+
+    ```toml configs/Lambda_Reconstruction.toml
+    [probe]
+    input_file = "datasets/Lambda_Recons_7000GeV_100k.root"
+
+    [probe.events.particles.protons]
+    tree            = "Protons"
+    spec            = 0
+    branches        = [["pX","D"], ["pY","D"], ["pZ","D"], ["Energy","D"]]
+    index           = ["Index", "I"]
+    index_sorted    = true
+    index_ascending = true
+    index_monotonic = true
+
+    [probe.events.particles.pions]
+    tree            = "Pions"
+    spec            = 0
+    branches        = [["pX","D"], ["pY","D"], ["pZ","D"], ["Energy","D"]]
+    index           = ["Index", "I"]
+    index_sorted    = true
+    index_ascending = true
+    index_monotonic = true
+    ```
+
+    The `[record.paths]` section controls where output lands. The defaults write to `output/Lambda_Reconstruction/`.
+
+    ```toml configs/Lambda_Reconstruction.toml
+    [record.paths]
+    directory            = "output/Lambda_Reconstruction/"
+    output_log_directory = "logs/"
+    checkpoint_directory = "checkpoints/"
+    serialDirectory      = true
+    logInSubDir          = true
+    checkpointsInSubDir  = true
+    ```
+
+    <Tip>
+      Set `[events] event_count` to a smaller number (e.g. `10_000`) for a faster first run.
+    </Tip>
+  </Step>
+
+  <Step title="Compile the binary">
+    Run `make` with the entry-point name. The Makefile compiles `_Lambda_Reconstruction.cc` against ROOT, Pythia8, and toml++ automatically.
+
+    ```bash
+    make _Lambda_Reconstruction
+    ```
+
+    The build rule expands to:
+
+    ```bash
+    g++ _Lambda_Reconstruction.cc -o _Lambda_Reconstruction.exe \
+      $(root-config --cflags --ldflags --glibs) \
+      $(pythia8-config --cxxflags --ldflags) \
+      $(pkg-config --cflags --libs tomlplusplus) \
+      -O2 -march=native -std=c++17 -I./utils -I./modules \
+      -DGIT_SHA="..." -DGIT_DIRTY=0
+    ```
+
+    <Note>
+      The `%: %.exe` phony alias means `make _Lambda_Reconstruction` and `make _Lambda_Reconstruction.exe` are equivalent.
+    </Note>
+  </Step>
+
+  <Step title="Run the binary">
+    Execute the compiled binary. Pass an optional path to a different TOML config as the first argument; it defaults to `configs/Lambda_Reconstruction.toml`.
+
+    ```bash
+    ./_Lambda_Reconstruction.exe
+    # or with a custom config:
+    ./_Lambda_Reconstruction.exe configs/my_analysis.toml
+    ```
+
+    Monitor prints a live progress bar and status line to the terminal. You will see per-event throughput, an ETA, and periodic checkpoint messages.
+  </Step>
+
+  <Step title="Inspect the output">
+    When the run finishes, the output ROOT file appears in the directory specified by `[record.paths] directory`. Open it with ROOT to inspect the histograms.
+
+    ```bash
+    root -l output/Lambda_Reconstruction/41/Lambda_Recons_100000ev.root
+    ```
+
+    ```cpp
+    // Inside the ROOT interactive session:
+    .ls          // list all objects written to the file
+    ```
+
+    <Tip>
+      Use `_Paint.cc` to render histograms to PNG or PDF without opening the ROOT interactive shell. See the [Paint histograms guide](/guides/paint-histograms).
+    </Tip>
+  </Step>
+</Steps>
+
+## How the analysis callback works
+
+The driver (`_Lambda_Reconstruction.cc`) registers a lambda that calls `Lambda::rootAnalysis` for every event the Probe delivers:
+
+```cpp _Lambda_Reconstruction.cc
+probe.streamEvents([&](const Probe::Event& ev, int threadId) {
+    Lambda::rootAnalysis(ev, threadId, ctx);
+});
+```
+
+`Lambda::rootAnalysis` has this signature:
+
+```cpp modules/Lambda.hh
+inline void rootAnalysis(const Probe::Event& ev,
+                         int threadId,
+                         AnalysisContext& ctx)
+```
+
+Inside the callback, particle 4-vectors are accessed by label:
+
+```cpp modules/Lambda.hh
+const std::vector<Lorentz>& protonList = ev[ctx.parameters.protonLabel];
+const std::vector<Lorentz>& pionList   = ev[ctx.parameters.pionLabel];
+```
+
+`reconstructCandidates` performs proton × pion combinatorics with the configured mass-window and angular cuts, then `fillCandidates` fans the results into histogram fill requests on the `Record::Writer`. The callback is invoked concurrently across all collector threads, so `AnalysisContext` members that are not thread-local must be thread-safe — `Record::Writer::fillParticleEvent` is.
+
+## Next steps
+
+- Read the [installation guide](/installation) for detailed dependency setup and environment variable requirements.
+- Read [Core concepts: pipeline](/concepts/pipeline) to understand how Probe, Record, and Monitor coordinate at runtime.
+- Read the [Lambda reconstruction guide](/guides/lambda-reconstruction) for a deep dive into the physics, cuts, and histogram declarations.

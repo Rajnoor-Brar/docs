@@ -1,0 +1,145 @@
+---
+title: "The High-Energy three-stage analysis pipeline"
+description: "Learn how data flows from a TOML config through Probe, your callback, and Record::Writer to a ROOT output file, with Monitor running in the background."
+---
+
+High-Energy organises every analysis run as a three-stage pipeline: **Probe** reads ROOT TTrees in parallel and delivers typed event structs, your **callback** processes each event and pushes fill requests, and **Record::Writer** buffers those requests through a worker pool before merging and writing a ROOT output file. **Monitor::AsyncLogger** runs independently throughout the run, printing progress, detecting stalls, and triggering periodic checkpoints. You wire all three stages together with a single call to `Config::configure<ProbePipeline>()`, which reads your TOML file and distributes settings to each component.
+
+## Data flow at a glance
+
+```text
+[ROOT TTree] ──► Probe ──► user callback ──► Record::Writer ──► [ROOT output]
+                                 │
+                          Monitor::AsyncLogger (heartbeat, progress, stall)
+```
+
+The full path from config file to ROOT output looks like this:
+
+```text
+TOML file
+    │
+    ▼ Config::readConfig
+Watch / Register / Events
+    │
+    ├──► Probe::configureProbe(ProbeConfig)   ← Event / Feed / Mixed
+    │         │
+    │         ▼ ProbeParallel::streamEvents(callback)
+    │         │   Reader thread 0: EventStream → Event{particle, node}
+    │         │   Reader thread 1: …
+    │         │   [Collector thread]: invoke callback(Event&, threadId)
+    │         │
+    │         └──► callback (Lambda::rootAnalysis, …)
+    │                   │
+    │                   ▼ Record::Writer::fillParticleEvent(…)
+    │                         │ pushFill(ParticleRequest)
+    │                         ▼
+    │                   Fill worker: clone[i]->Fill(…)
+    │
+    ├──► Monitor::AsyncLogger::start()
+    │         heartbeat thread: progress render, stall check
+    │         WatchRequest: checkpoint every K events
+    │
+    └──► end of run:
+              mergeAllClones()
+              TFile::Write()
+              Monitor::AsyncLogger::stop()
+```
+
+## The three stages
+
+<Steps>
+  <Step title="Probe — parallel TTree reading">
+    `ProbeParallel` opens your ROOT input file on multiple reader threads simultaneously. Each thread constructs an `EventStream` (or `FeedStream`) over its partition of the event index space and delivers typed `Event` or `Feed` structs to your callback. You choose between three streaming methods — `streamEvents`, `streamFeed`, or `stream` — depending on which TOML buckets you have configured.
+  </Step>
+  <Step title="User callback — your analysis logic">
+    Your callback receives a `const Probe::Event&` and a `threadId` integer. Inside the callback you access particle collections by label (e.g. `ev.particle["protons"]`) and call `Record::Writer` fill methods. The fill methods push requests onto a bounded queue; they never block on ROOT I/O, so your callback returns quickly and lets the reader threads continue.
+  </Step>
+  <Step title="Record::Writer — buffered, thread-safe output">
+    Fill workers drain the queue and dispatch each `FillRequest` to the appropriate per-worker ROOT object clone. At the end of the run, `mergeAllClones()` resets each master histogram and `Add()`s every worker's clone into it, then `TFile::Write()` persists the merged results. You never touch ROOT objects directly from callback code.
+  </Step>
+</Steps>
+
+## Threading model
+
+The pipeline runs on six distinct thread roles. Reader and fill-worker counts are configured independently; both default to `(hardware_concurrency − 2) / 2` when set to `0` in the TOML.
+
+| Thread | Owner | Role |
+|---|---|---|
+| Main | driver | Configure, call `streamEvents`/`streamFeed`/`stream`, await completion |
+| Reader × N | `ProbeParallel` | Open TFile, read TTrees, push frames to queue or invoke callback directly |
+| Collector (optional) | `ProbeParallel` | Drain the event queue, invoke event/feed callbacks concurrently |
+| Fill worker × M | `Record::Writer` | Dequeue `FillRequest`, fill per-worker ROOT object clones |
+| Watchdog | `Record::Writer` | Monitor event consumption counter, trigger checkpoints and finalize on run end |
+| Heartbeat | `Monitor::AsyncLogger` | Render progress, detect stalls, flush log slots |
+
+<Note>
+Reader threads (`probe_threads`) and fill workers (`writer_threads`) are sized independently. Tuning the ratio between them depends on whether your bottleneck is I/O throughput or histogram filling.
+</Note>
+
+## Wiring the pipeline with `Config::configure`
+
+`Config::configure<ProbePipeline>(path)` is a single-call facade that reads your TOML file and configures Probe, Writer, and Monitor without you managing the order manually.
+
+```cpp
+// Driver entry point — wire all three stages from one config path.
+Config::configure<ProbePipeline>(configPath, probe, writer, monitor);
+
+// Then start the monitor and stream events.
+monitor.start();
+probe.streamEvents([&](const Probe::Event& ev, int tid) {
+    Lambda::rootAnalysis(ev, tid, ctx);
+});
+monitor.stop();
+```
+
+<Tip>
+Include `Config/Configure.hh` explicitly in your driver after your other umbrella includes. It depends on `Probe.hh`, `Record.hh`, and `Monitor.hh`, so it is intentionally excluded from the main `Config.hh` wrapper to avoid circular includes.
+</Tip>
+
+## Config key reference
+
+The TOML sections that drive pipeline setup:
+
+<CodeGroup>
+
+```toml events and threads
+[events]
+event_count = 10000   # 0 = process all events in the file
+
+[probe]
+input_file       = "output/data.root"
+probe_threads    = 0  # reader threads  (0 = auto)
+analysis_threads = 0  # collector threads (0 = same as probe_threads)
+callback_mode    = "CollectorThread"   # or "WorkerThread"
+```
+
+```toml record output
+[record]
+bin_count      = 500   # default histogram bin count
+writer_threads = 0     # fill-worker threads (0 = auto)
+
+[record.paths]
+directory = "output/Lambda_Reconstruction/"
+```
+
+```toml monitor pacing
+[monitor.intervals]
+print_interval         = 1000    # events between status-line updates
+checkpoint_interval    = 100000  # events between checkpoint writes
+program_stall_threshold = 5.0   # minutes of silence before stall abort
+```
+
+</CodeGroup>
+
+## What happens at finalize
+
+When `streamEvents` returns, the run enters finalization in this order:
+
+1. The fill-worker queue drains completely — no requests are dropped.
+2. `mergeAllClones()` resets every master ROOT object, then `Add()`s each fill-worker's private clone into it. For `TGraph`, points are copied sequentially because `TGraph` does not support `Add()`.
+3. `TFile::Write()` persists the merged masters to the output ROOT file.
+4. `Monitor::AsyncLogger::stop()` joins the heartbeat thread and writes the final run-stat log.
+
+<Note>
+The Watchdog thread (owned by `Record::Writer`) is the component that triggers finalization. It monitors the event consumption counter and signals `Monitor::AsyncLogger` to finalize when streaming ends, or to abort if a stall is detected.
+</Note>

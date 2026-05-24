@@ -1,0 +1,159 @@
+---
+title: "Install High-Energy and its dependencies"
+description: "Set up ROOT 6, Pythia8 3, and toml++ 3 on Linux or macOS, verify your environment variables, then compile High-Energy with the provided Makefile."
+---
+
+High-Energy has three mandatory runtime dependencies — ROOT, Pythia8, and toml++ — and relies on their `pkg-config` and `*-config` scripts being on your `PATH` at compile time. This page covers installing each dependency, verifying your environment, and building the project.
+
+## System requirements
+
+| Requirement | Minimum version | Notes |
+|---|---|---|
+| OS | Linux or macOS | Windows is not supported |
+| C++ compiler | GCC 9+ or Clang 10+ | Must support `-std=c++17` and `-march=native` |
+| ROOT | 6.x | `root-config` must be on `PATH` |
+| Pythia8 | 3.x | `pythia8-config` must be on `PATH` |
+| toml++ | 3.x | `pkg-config --libs tomlplusplus` must succeed |
+
+<Warning>
+  Pythia8 is required at link time for all binaries, including ROOT-only reconstruction pipelines. The Makefile unconditionally passes `$(pythia8-config --cxxflags --ldflags)` to every build target.
+</Warning>
+
+## Install dependencies
+
+<CodeGroup>
+
+```bash macOS (Homebrew)
+# ROOT
+brew install root
+
+# Pythia8 — available via Homebrew on macOS
+brew install pythia8
+
+# toml++ — header-only library with a pkg-config file
+brew install toml++
+```
+
+```bash Ubuntu / Debian (apt)
+# ROOT — install from the CERN upstream repository
+# See https://root.cern/install/ for the current apt source
+apt-get install -y dpkg-dev cmake g++ gcc \
+  binutils libx11-dev libxpm-dev libxft-dev libxext-dev python3
+
+# Download and run the ROOT installer script from root.cern, or:
+# snap install root-framework   # snap package, sets up root-config automatically
+
+# Pythia8 — compile from source (recommended for physics accuracy)
+# Download from https://pythia.org, then:
+./configure --prefix=/usr/local
+make -j$(nproc)
+make install
+
+# toml++ — header-only, install via pkg-config
+apt-get install -y libtoml++-dev   # available in Ubuntu 22.04+
+# or manually: copy toml.hpp into /usr/local/include and write a .pc file
+```
+
+</CodeGroup>
+
+<Note>
+  On Ubuntu versions earlier than 22.04, `libtoml++-dev` may not be in the default package index. In that case, download the single-header release from the [toml++ GitHub releases page](https://github.com/marzer/tomlplusplus/releases), place `toml.hpp` somewhere on your include path, and write a minimal `tomlplusplus.pc` file so `pkg-config` can find it.
+</Note>
+
+## Set environment variables
+
+The Makefile resolves all compiler and linker flags at build time using three commands. Make sure each one works in your shell before running `make`.
+
+```bash
+# Verify ROOT is on PATH
+root-config --cflags --ldflags --glibs
+
+# Verify Pythia8 is on PATH
+pythia8-config --cxxflags --ldflags
+
+# Verify toml++ is registered with pkg-config
+pkg-config --cflags --libs tomlplusplus
+```
+
+If any command fails, add the relevant `bin/` directory to your `PATH` and, for ROOT, source the `thisroot` script:
+
+```bash
+# ROOT — source the environment setup script
+source /path/to/root/bin/thisroot.sh      # bash/zsh
+# source /path/to/root/bin/thisroot.csh   # csh/tcsh
+
+# Pythia8 — add its bin to PATH if pythia8-config is not found
+export PATH="/usr/local/pythia8/bin:$PATH"
+
+# toml++ — set PKG_CONFIG_PATH if your .pc file is in a non-standard location
+export PKG_CONFIG_PATH="/usr/local/lib/pkgconfig:$PKG_CONFIG_PATH"
+```
+
+<Tip>
+  Add these exports to your `~/.bashrc` or `~/.zshrc` so they persist across sessions.
+</Tip>
+
+## Compile High-Energy
+
+Clone the repository, then use `make` with the name of the entry-point source file (without the `.cc` extension).
+
+```bash
+git clone https://github.com/Rajnoor-Brar/High-Energy.git
+cd High-Energy
+
+# Compile the Lambda reconstruction binary
+make _Lambda_Reconstruction
+```
+
+The Makefile pattern rule builds any `<name>.exe` from the matching `<name>.cc`:
+
+```makefile Makefile
+%.exe: %.cc
+	$(CXX) $< -o $@ $(ROOT_FLAGS) $(PYTHIA_FLAGS) $(TOML_FLAGS) \
+	  $(BASE_CXXFLAGS) $(GIT_DEFINES)
+```
+
+`BASE_CXXFLAGS` is `-O2 -march=native -std=c++17 -I./utils -I./modules`. The `GIT_DEFINES` bake the current git SHA and dirty state into the binary for run provenance tracking.
+
+### Other entry points
+
+| Command | Binary | Purpose |
+|---|---|---|
+| `make _Lambda_Reconstruction` | `_Lambda_Reconstruction.exe` | Main ROOT-based reconstruction pipeline |
+| `make _Lambda_Parallel` | `_Lambda_Parallel.exe` | Parallel Probe variant |
+| `make _Lambda_Data` | `_Lambda_Data.exe` | Pythia8 data generator — writes ROOT TTrees |
+| `make _Paint` | `_Paint.exe` | Standalone histogram renderer |
+
+## Run the test suite
+
+Run all unit and integration tests with:
+
+```bash
+make test
+```
+
+This compiles and runs the following test binaries under `tests/`:
+
+- `test_reconstructCandidates.exe` — unit tests for proton × pion combinatorics
+- `test_probe_parallel.exe` — Probe streaming integration test
+- `test_record_writer.exe` — Record fill and merge test
+- `test_rootAnalysis_smoke.exe` — end-to-end smoke test for the analysis callback
+- `test_paint.exe` — Paint renderer test
+- `test_config.exe` — TOML config parsing test
+
+Individual test binaries follow the same build rule as entry points:
+
+```bash
+make tests/test_reconstructCandidates.exe
+./tests/test_reconstructCandidates.exe
+```
+
+## Clean build artifacts
+
+Remove all compiled executables with:
+
+```bash
+make clean
+```
+
+This deletes `*.exe`, `tests/*.exe`, and `tests/fixtures/*.exe` but leaves source files and generated output directories untouched.

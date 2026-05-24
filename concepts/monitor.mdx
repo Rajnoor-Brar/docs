@@ -1,0 +1,157 @@
+---
+title: "Background progress monitoring with AsyncLogger"
+description: "Monitor::AsyncLogger runs a heartbeat thread that renders terminal progress, detects stalls, writes run-stat files, and triggers checkpoints during analysis."
+---
+
+`Monitor::AsyncLogger` runs in the background throughout your analysis, independently of the Probe and Record stages. It manages a single heartbeat thread that wakes on a configurable interval, renders a status line and progress bar to the terminal, checks whether the analysis has stalled, processes signals from the `Record::Writer` Watchdog, and writes run-stat files to disk. You start it after `Record::Writer::start()` and stop it after `streamEvents` returns — two calls that bracket the entire streaming phase.
+
+## AsyncLogger lifecycle
+
+```text
+AsyncLogger::start()
+    ↓
+heartbeat thread ──loop──► sleep(heartbeatMs)
+                        ├── render progress  (every printInterval events)
+                        ├── render bar       (every barInterval events)
+                        ├── check stall      (every checkInterval events)
+                        │       └── stallThreshold exceeded? → abort + finalize
+                        └── flush log slots  → file / stdout
+
+AsyncLogger::stop()
+    ↓
+join heartbeat thread
+```
+
+In your driver, the pattern looks like this:
+
+```cpp
+// Configure all three stages from the TOML file.
+Config::configure<ProbePipeline>(configPath, probe, writer, monitor);
+
+writer.open(outputPath);
+// ... declare histograms ...
+writer.start();
+
+monitor.start();   // start heartbeat thread AFTER writer.start()
+
+probe.streamEvents([&](const Probe::Event& ev, int tid) {
+    Lambda::rootAnalysis(ev, tid, ctx);
+});
+
+monitor.stop();    // join heartbeat thread AFTER streamEvents returns
+```
+
+<Note>
+Always call `monitor.start()` after `writer.start()` and `monitor.stop()` after `streamEvents` returns. The AsyncLogger reads event consumption data from `Record::Writer`; starting it before the Writer is running produces undefined progress readings.
+</Note>
+
+## Pacing parameters (`PacingInfo`)
+
+`PacingInfo` controls how often the heartbeat thread performs each of its tasks. All fields are set through the `[monitor.intervals]` TOML section.
+
+| `PacingInfo` field | TOML key | Default | Effect |
+|---|---|---|---|
+| `printInterval` | `print_interval` | 10 | Render status line every N events consumed |
+| `barInterval` | — | 50 | Render progress bar every N events consumed |
+| `checkInterval` | — | 10 000 | Check stall / drain `WatchRequest` slots every N events |
+| `heartbeatMs` | `heartbeat_interval` | 1 000 ms | Heartbeat thread sleep duration |
+| `terminalRefresh` | `terminal_refresh_interval` | 300 s | Full terminal re-draw period |
+| `stallThreshold` | `program_stall_threshold` | 300 s | No-progress duration before abort |
+
+```toml
+[monitor.intervals]
+print_interval            = 1000    # events between status-line updates
+heartbeat_interval        = 2000    # ms between heartbeat file writes
+terminal_refresh_interval = 2.0     # minutes between terminal refreshes
+program_stall_threshold   = 5.0     # minutes of silence before stall abort
+checkpoint_interval       = 100000  # events between automatic checkpoints
+```
+
+<Tip>
+For interactive terminal sessions, lower `print_interval` to 100–500 events so the status line updates frequently. For batch cluster jobs where terminal output is piped to a file, raise it to 10 000 or higher to avoid gigabytes of log output.
+</Tip>
+
+## Stall detection
+
+On every `checkInterval`-th event, the heartbeat loop compares the current event count against its previous reading. If no events have been consumed for `stallThreshold` seconds, the AsyncLogger sets an abort flag and signals `Record::Writer` to finalize immediately.
+
+```text
+heartbeat wakes every heartbeatMs
+    │
+    ▼ every checkInterval events consumed:
+    │   read event consumption counter
+    │   compare to last-check value
+    │   time since last progress > stallThreshold?
+    │       YES → set abort flag → emit finalize WatchRequest
+    │       NO  → update last-check snapshot
+```
+
+A stall indicates that Probe reader threads have stopped delivering events — this can happen if a ROOT file is corrupted, a thread has deadlocked, or the system is under severe I/O pressure. The abort path calls `mergeAllClones()` and `TFile::Write()` so you recover partial results even from a stalled run.
+
+## Signal flow from Writer to Monitor
+
+`Record::Writer`'s Watchdog thread sends signals to the AsyncLogger that are queued and drained by the heartbeat loop:
+
+```text
+Record::Writer Watchdog
+    │
+    ▼ sends signal (Checkpoint | Heartbeat | Finalize | Abort)
+    │
+    ▼ queued in AsyncLogger
+    │
+    ▼ heartbeat loop processes signals
+    │   Checkpoint  → write partial merged ROOT file to checkpoint_directory
+    │   Heartbeat   → write heartbeat file to output_log_directory
+    │   Finalize    → mergeAllClones() + TFile::Write() + stop()
+    │   Abort       → mergeAllClones() + TFile::Write() + stop() (stall path)
+```
+
+## Log flags
+
+The `[monitor.logs]` section controls which signals the Watchdog emits and which files the AsyncLogger writes:
+
+```toml
+[monitor.logs]
+save_heartbeat    = false   # enable periodic heartbeat file writes
+save_checkpoints  = false   # enable checkpoint ROOT file snapshots
+save_log_threads  = false   # write per-thread stat files to output_log_directory
+save_final_log    = true    # write final run-stat log on finish
+```
+
+| Flag | Effect when `true` |
+|---|---|
+| `save_heartbeat` | AsyncLogger writes a heartbeat file to `output_log_directory` on each heartbeat cycle |
+| `save_checkpoints` | AsyncLogger writes a checkpoint ROOT file to `checkpoint_directory` every `checkpoint_interval` events |
+| `save_log_threads` | AsyncLogger writes per-thread statistics (events processed, timing) to individual files in `output_log_directory` |
+| `save_final_log` | AsyncLogger writes a final run-stat summary (total events, elapsed time, throughput) at the end of the run |
+
+## Terminal output
+
+On every `printInterval`-th event, the heartbeat renders a status line showing elapsed time, events consumed, throughput, and estimated time remaining. On every `barInterval`-th event, it renders a progress bar using ANSI escape codes, sized to the current terminal width via `ioctl`. The full terminal is redrawn every `terminalRefresh` seconds to recover from terminal resize or corrupted output.
+
+<Note>
+`Monitor::terminalMutex()` is a process-wide mutex that guards all terminal writes. If your callback needs to write to stdout or stderr (for example, to print the first event's Pythia info), acquire this mutex before writing to avoid interleaving with the AsyncLogger's progress output.
+</Note>
+
+## `ScopeTimer` and `TimerRegistry`
+
+`Monitor/Timer.hh` provides two utilities for profiling sections of your analysis:
+
+- `ScopeTimer` — RAII helper that measures the duration of a named scope. Use the `MONITOR_SCOPE_TIMER("name")` macro at the top of a function to record every invocation.
+- `TimerRegistry` — in-memory accumulator that collects all `ScopeTimer` measurements. At shutdown, it dumps a CSV summary to the output log directory.
+
+```cpp
+inline void rootAnalysis(const Probe::Event& ev, int threadId, AnalysisContext& ctx)
+{
+    MONITOR_SCOPE_TIMER("Lambda.rootAnalysis");       // times the whole callback
+
+    Candidates candidates;
+    {
+        MONITOR_SCOPE_TIMER("Lambda.reconstructCandidates");   // times reconstruction only
+        candidates = reconstructCandidates(protonList, pionList, ctx.parameters);
+    }
+    fillCandidates(ctx.writer, std::move(candidates));
+}
+```
+
+The CSV output shows per-named-scope call count, total time, mean time, and max time — useful for identifying whether reconstruction or filling is your bottleneck.

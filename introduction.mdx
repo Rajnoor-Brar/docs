@@ -1,0 +1,46 @@
+---
+title: "High-Energy: parallel physics analysis in C++17"
+description: "High-Energy is a C++17 framework that streams ROOT TTrees in parallel, fills histograms thread-safely, and renders publication-quality plots from TOML config."
+---
+
+High-Energy is a C++17 framework for high-energy physics analysis. It solves the problem of writing parallel ROOT TTree processing from scratch every time: you supply an analysis callback, configure a TOML file, and the framework handles multi-threaded event streaming, concurrent histogram filling, automatic checkpointing, and live terminal progress — all without you managing a single thread directly.
+
+## The three-stage pipeline
+
+Every analysis in High-Energy moves data through three coordinated stages that run concurrently once you call `streamEvents`, `streamFeed`, or `stream`.
+
+```
+[ROOT TTree] ──► Probe ──► user callback ──► Record::Writer ──► [ROOT output]
+                                 │
+                          Monitor::AsyncLogger (heartbeat, progress, stall)
+```
+
+**Probe** reads one or more ROOT TTrees in parallel across a configurable pool of reader threads. It joins particle branches from multiple trees into a single typed `Event` (or scalar-per-entry `Feed`), then delivers them to your callback. You never open a `TFile` or iterate a `TTree` manually.
+
+**Record** accepts fill requests from your callback, routes them through a pool of fill-worker threads, accumulates per-worker histogram clones, and merges everything into master objects when the run finishes. ROOT objects are never shared between threads.
+
+**Monitor** runs a background heartbeat thread that renders ANSI progress bars and status lines to the terminal, detects stalls if no events are processed within a configurable threshold, writes periodic checkpoint snapshots to disk, and signals Record to finalize on abort.
+
+## Key features
+
+- **Parallel streaming** — reader thread count and collector (analysis) thread count are configured independently; both default to `(hardware_concurrency − 2) / 2`, clamped to ≥ 1.
+- **Thread-safe writing** — each fill-worker owns private histogram clones allocated from ROOT master objects; `mergeAllClones()` resets and `Add()`s clones into the master at finalization.
+- **TOML configuration** — a single `.toml` file drives all three stages: input paths, thread counts, histogram bin counts, output directories, monitor intervals, and physics cut parameters.
+- **Paint renderer** — an offline plotting layer (`_Paint.cc`) reads TOML style presets, resolves ROOT objects from output files, and exports to PNG, PDF, SVG, or ROOT format without touching the analysis runtime.
+
+## Explore the documentation
+
+<CardGroup cols={2}>
+  <Card title="Quick start" icon="rocket" href="/quickstart">
+    Build and run the Lambda reconstruction example in under ten minutes.
+  </Card>
+  <Card title="Core concepts: pipeline" icon="diagram-project" href="/concepts/pipeline">
+    Understand how Probe, Record, and Monitor interact at runtime.
+  </Card>
+  <Card title="Configuration overview" icon="sliders" href="/configuration/overview">
+    Learn how a single TOML file drives every stage of the pipeline.
+  </Card>
+  <Card title="Lambda reconstruction guide" icon="atom" href="/guides/lambda-reconstruction">
+    Walk through a complete Λ⁰ → p + π⁻ reconstruction from data to histograms.
+  </Card>
+</CardGroup>

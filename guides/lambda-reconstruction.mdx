@@ -1,0 +1,248 @@
+---
+title: "Reconstruct Lambda baryons from ROOT data"
+description: "Walk through the full Lambda reconstruction pipeline: configure a ROOT TTree input, set physics cuts, declare histograms, run the analysis, and inspect output."
+sidebarTitle: "Lambda reconstruction"
+---
+
+The Lambda reconstruction pipeline reads proton and pion four-vectors from a ROOT `TTree`, forms all proton–pion candidate pairs, applies an invariant-mass window cut, resolves ambiguities by picking the closest-to-nominal pair per proton, and writes three sets of histograms (unvalidated, validated, selected) to an output ROOT file. The driver is `_Lambda_Reconstruction.cc` and is controlled entirely through a single TOML config file.
+
+## Prerequisites
+
+- A ROOT file containing `Protons` and `Pions` trees with `pX`, `pY`, `pZ`, `Energy`, and `Index` branches (all `Double_t` except `Index` which is `Int_t`). You can produce this file with the [data generation](/guides/data-generation) pipeline.
+- The framework built with a C++17-capable compiler and ROOT 6.
+
+<Steps>
+
+<Step title="Prepare the input ROOT file">
+
+The Probe layer expects two TTrees in the same ROOT file, each with the same branch layout:
+
+| Branch | Type | Description |
+|--------|------|-------------|
+| `pX` | `Double_t` | x-component of momentum (GeV) |
+| `pY` | `Double_t` | y-component of momentum (GeV) |
+| `pZ` | `Double_t` | z-component of momentum (GeV) |
+| `Energy` | `Double_t` | total energy (GeV) |
+| `Index` | `Int_t` | event index used to group particles |
+
+The `[probe.events.particles.protons]` and `[probe.events.particles.pions]` config tables map these names explicitly, so you can override them if your file uses different branch names.
+
+<Note>
+Files produced by `_Lambda_Data` use `event_index` (lowercase, underscore) as the index branch name rather than `Index`. Set `index = ["event_index", "I"]` in each particle table when using that input.
+</Note>
+
+</Step>
+
+<Step title="Configure the TOML file">
+
+Edit `configs/Lambda_Reconstruction.toml`. The essential keys are:
+
+```toml configs/Lambda_Reconstruction.toml
+[events]
+event_count = 100_000   # 0 = read all events in the file
+
+[threads]
+probe    = 4   # ROOT reader threads
+analysis = 4   # collector threads (CollectorThread mode)
+writer   = 4   # Record fill-worker pool
+
+[probe]
+input_file = "output/Lambda_Data/_08/Lambda_Recons_7000GeV_10M.root"
+
+[probe.events.particles.protons]
+tree            = "Protons"
+spec            = 0
+branches        = [["pX","D"], ["pY","D"], ["pZ","D"], ["Energy","D"]]
+index           = ["Index", "I"]
+index_sorted    = true
+index_ascending = true
+index_monotonic = true
+
+[probe.events.particles.pions]
+tree            = "Pions"
+spec            = 0
+branches        = [["pX","D"], ["pY","D"], ["pZ","D"], ["Energy","D"]]
+index           = ["Index", "I"]
+index_sorted    = true
+index_ascending = true
+index_monotonic = true
+
+[record.paths]
+directory       = "output/Lambda_Reconstruction/"
+serialDirectory = true
+```
+
+`spec = 0` selects the Cartesian `(pX, pY, pZ, Energy)` coordinate scheme. The `index_sorted`, `index_ascending`, and `index_monotonic` flags let the reader skip a full sort pass when the source data is already ordered.
+
+</Step>
+
+<Step title="Set the Lambda physics parameters">
+
+The `[lambda]` section controls the reconstruction cuts and selects a histogram-limits preset:
+
+```toml configs/Lambda_Reconstruction.toml
+[lambda]
+hist_limits      = "Lambda_Limits"   # limits-file preset name
+delta_mass_gev   = 0.15              # ±GeV window around the nominal Lambda mass
+delta_theta_rad  = 0.1              # retained for logging; theta cut not active by default
+reserved_protons = 20               # beam protons excluded from candidate pairing (2 × Z)
+```
+
+`delta_mass_gev` is the half-width of the invariant-mass acceptance window. The nominal Lambda mass is `1.115 GeV` (defined as `kLambdaMass` in `modules/Lambda/Types.hh`), so the default window is `[0.965, 1.265] GeV`.
+
+`reserved_protons` prevents the framework from counting beam protons as candidates. For a proton–proton collision set this to `2`; for Ne–Ne (Z=10) use `20`.
+
+</Step>
+
+<Step title="Declare histograms">
+
+In your driver — or inside `Lambda::configure()` — call `extractPhysics` to populate a `Parameters` struct from TOML and then `declareObjects` to register all histogram objects with the writer:
+
+```cpp _Lambda_Reconstruction.cc
+Lambda::Parameters physParams;
+Lambda::configure(physParams, writer, configPath);
+```
+
+`Lambda::configure` is a convenience wrapper defined in `modules/Lambda.hh`:
+
+```cpp modules/Lambda.hh
+inline void configure(Parameters&        parameters,
+                      Record::Writer&    writer,
+                      const std::string& configPath) {
+    extractPhysics(configPath, parameters, writer.histConfig());
+    declareObjects(parameters, writer);
+}
+```
+
+`declareObjects` registers three histogram groups — `Unvalidated`, `Validated`, and `Selected` — each containing the following distributions:
+
+| Histogram | ROOT path |
+|-----------|-----------|
+| Candidate count | `{Set}CountHist` |
+| Invariant mass | `{Set}_Mass_Invariant_Hist` |
+| Net energy | `{Set}_Energy_Net_Hist` |
+| Net momentum | `{Set}_Momentum_Net_Hist` |
+| Transverse momentum | `{Set}_Momentum_Transverse_Hist` |
+| z-momentum | `{Set}_Momentum_Z_Hist` |
+| Pseudorapidity | `{Set}_Pseudorapidity_Hist` |
+
+</Step>
+
+<Step title="Write the analysis callback">
+
+`Lambda::rootAnalysis` is the per-event callback passed to `ProbeParallel::streamEvents`. It reads the proton and pion lists from the `Probe::Event`, runs reconstruction, and posts fill requests to the writer:
+
+```cpp modules/Lambda.hh
+inline void rootAnalysis(const Probe::Event& ev,
+                         int threadId,
+                         AnalysisContext& ctx)
+{
+    MONITOR_SCOPE_TIMER("Lambda.rootAnalysis");
+    const std::size_t eventIndex = ctx.asyncLogger.countEvent();
+
+    const std::vector<Lorentz>& protonList = ev[ctx.parameters.protonLabel];
+    const std::vector<Lorentz>& pionList   = ev[ctx.parameters.pionLabel];
+
+    Candidates candidates;
+    { MONITOR_SCOPE_TIMER("Lambda.reconstructCandidates");
+      candidates = reconstructCandidates(protonList, pionList, ctx.parameters); }
+    fillCandidates(ctx.writer, std::move(candidates));
+    ctx.logging.recordEvent(std::chrono::system_clock::now());
+
+    ctx.asyncLogger.publish( Monitor::RunPhase::Analysis);
+}
+```
+
+The callback is thread-safe: `Record::Writer::fillParticleEvent` is the only shared-state call, and the writer serializes fills internally through its worker-pool queue.
+
+</Step>
+
+<Step title="Reconstruct candidates">
+
+`Lambda::reconstructCandidates` iterates all proton–pion pairs, forms the four-vector sum, applies the invariant-mass cut, and then resolves ambiguities by selecting the pair with the smallest mass deviation per proton:
+
+```cpp modules/Lambda/Reconstruction.hh
+inline Candidates reconstructCandidates(
+    const std::vector<Lorentz>& protons,
+    const std::vector<Lorentz>& pions,
+    const Parameters& parameters)
+{
+    Candidates result;
+    const std::size_t candidateTarget = protons.size() > parameters.reservedProtons
+        ? protons.size() - parameters.reservedProtons : 0;
+
+    std::vector<bool> pionTaken(pions.size(), false);
+    std::vector<bool> protonsTaken(protons.size(), false);
+    std::vector<Particle> candidates;
+
+    for (std::size_t iProton = 0; iProton < protons.size(); ++iProton) {
+        const Lorentz& proton = protons[iProton];
+        for (std::size_t iPion = 0; iPion < pions.size(); ++iPion) {
+            const Lorentz& pion = pions[iPion];
+            const Lorentz lambda = proton + pion;
+
+            result.unvalidated.push_back(lambda);
+
+            const bool massAccepted =
+                lambda.M() > (kLambdaMass - parameters.massTolerance) &&
+                lambda.M() < (kLambdaMass + parameters.massTolerance);
+
+            if (!massAccepted) continue;
+
+            result.validated.push_back(lambda);
+            const Double_t delta = std::abs(lambda.M() - kLambdaMass);
+            candidates.push_back(Particle{lambda, iProton, iPion, delta});
+        }
+    }
+    // ... sort by delta and select one pair per proton/pion
+    return result;
+}
+```
+
+Every pair goes into `unvalidated`. Pairs that pass the mass window also go into `validated`. After sorting by `|M - kLambdaMass|`, the greedy selection fills `selected` up to `candidateTarget` entries using each proton and pion at most once.
+
+</Step>
+
+<Step title="Fill results">
+
+`Lambda::fillCandidates` posts all three candidate vectors to the writer in a single call:
+
+```cpp modules/Lambda/Recording.hh
+inline void fillCandidates(Record::Writer& writer, Candidates candidates) {
+    writer.fillParticleEvent<HistogramSet>(
+        std::vector<std::pair<HistogramSet, std::vector<Lorentz>>>{
+            {HistogramSet::Unvalidated, std::move(candidates.unvalidated)},
+            {HistogramSet::Validated,   std::move(candidates.validated)},
+            {HistogramSet::Selected,    std::move(candidates.selected)},
+        });
+}
+```
+
+The writer fans each vector out across its fill-worker pool, updating per-worker histogram clones. On shutdown, `writer.finalize()` merges all clones and writes a single ROOT output file.
+
+</Step>
+
+<Step title="Build and run">
+
+```bash
+make _Lambda_Reconstruction
+./_Lambda_Reconstruction.exe configs/Lambda_Reconstruction.toml
+```
+
+Pass an alternative TOML path as the first argument to override the default. The output ROOT file appears under the directory set in `[record.paths].directory`, with a subdirectory named by the `serial` counter (e.g. `output/Lambda_Reconstruction/_41/`).
+
+</Step>
+
+</Steps>
+
+## Output histograms
+
+The output ROOT file contains three top-level directories, each holding the same set of histograms:
+
+| Directory | Contents |
+|-----------|----------|
+| `Unvalidated/` | All proton–pion pairs, no mass cut |
+| `Validated/` | Pairs inside the `delta_mass_gev` window |
+| `Selected/` | Best one-to-one assignment per proton |
+
+Use the [Paint renderer](/guides/paint-histograms) to export these histograms to PNG or PDF without writing a ROOT macro.

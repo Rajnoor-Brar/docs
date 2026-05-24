@@ -1,0 +1,35 @@
+---
+title: "Changelog"
+description: "New features, improvements, and fixes shipped in High-Energy."
+sidebarTitle: "Overview"
+mode: "center"
+---
+
+Follow what's new in High-Energy. Entries are grouped by week, newest first.
+
+<Update label="May 22, 2026" tags={["release"]}>
+
+## Sidequest release: utils, checkpoints, and the Paint renderer
+
+This week's release rounds out the second pipeline stage: the writer and monitor utilities are now feature-complete, the offline Paint renderer ships as a first-class tool, and the threading model is fully tunable from TOML.
+
+### New features
+
+- **Paint renderer for ROOT histograms.** A new `_Paint` executable reads a declarative `Paint.toml` and exports any histogram in your output file to PNG, PDF, SVG, or ROOT format — no `TCanvas` macros required. Single, overlay, and grid modes are supported, with per-result style overrides on top of a shared default style. See [Render ROOT histograms with the Paint renderer](/guides/paint-histograms).
+- **Automatic checkpoint snapshots.** The Monitor can now write periodic ROOT snapshots of in-progress histograms via `save_checkpoints` and `checkpoint_interval`. Long runs that are cancelled or interrupted leave behind inspectable partial results. See [Monitor configuration](/configuration/monitor#monitor-logs).
+- **Unified `[threads]` section.** Probe, analysis, writer, and Pythia thread pools can now be configured side-by-side in a single `[threads]` table, with `0` triggering auto-sizing per pool. Per-section overrides (`probe_threads`, `writer_threads`, …) still work. See [Threading](/guides/threading).
+- **`CollectorThread` and `WorkerThread` callback modes.** Choose between a queue-decoupled collector pool for heavy analysis callbacks, or in-line execution on the probe thread for lightweight callbacks. Set `callback_mode` in `[probe]`. See [Threading](/guides/threading#choosing-a-callback-mode).
+
+### Updates
+
+- **Stall detection and graceful abort.** The Monitor heartbeat now declares a stall after `program_stall_threshold` minutes of silence and triggers a clean `finalize()` instead of hanging indefinitely. Default threshold is 5 minutes. See [Monitor configuration](/configuration/monitor).
+- **Per-thread profiling logs.** Enable `save_log_threads` to write per-worker fill counts and queue-wait timings at the end of a run, making fill-worker imbalance easier to diagnose.
+- **Heartbeat log file.** External monitoring scripts can now tail a heartbeat file (`save_heartbeat = true`) instead of parsing terminal output for live progress.
+- **`true_time_at_config` clock origin.** Wall-clock measurements can now include configuration overhead by anchoring `t = 0` at config time rather than at first event. See [Monitor configuration](/configuration/monitor).
+- **Queue capacity tuning.** `queue_capacity` (probe → analysis) and `writer_queue_capacity` (analysis → writer) are now exposed as TOML keys for back-pressure tuning on high-core-count machines. See [Threading](/guides/threading#queue-capacities).
+
+### Fixes
+
+- **Cleaner build artefacts.** Profiler trace bundles, paint scratch directories, and the `results/` folder are now ignored by default so they no longer clutter clean clones.
+
+</Update>

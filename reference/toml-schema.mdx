@@ -1,0 +1,491 @@
+---
+title: "Complete TOML configuration schema reference"
+description: "Every section and key the High-Energy TOML parser accepts, with types, defaults, and descriptions. Covers probe, record, monitor, pythia, and lambda sections."
+---
+
+The framework reads a single TOML file at startup. `Config::readConfig` parses it into `Watch`, `Register`, and `Events` structs; `Config::configure<ProbePipeline>()` then distributes those values to Probe, Record::Writer, and Monitor::AsyncLogger. This page documents every section and key the parsers accept, organized by section. Optional keys that are absent are replaced with the default shown.
+
+<Warning>
+  The following legacy section aliases are **not supported** and will be silently ignored or cause a parse error:
+
+  | Old name | Use instead |
+  |---|---|
+  | `[run]` | `[events]` and `[record]` |
+  | `[paths]` | `[record.paths]` |
+  | `[file]` | `[record.file]` |
+  | `[metadata]` | `[record.metadata]` |
+  | `[log]` / `[logging]` | `[monitor]` |
+</Warning>
+
+## Minimal working example
+
+The following config is the smallest set of keys needed to run a Lambda reconstruction job with automatic thread counts and default histogram limits.
+
+```toml Lambda_Reconstruction.toml
+[events]
+event_count = 100_000
+
+[probe]
+input_file = "output/Lambda_Data/_08/Lambda_Recons_7000GeV_10M.root"
+
+[probe.events.particles.protons]
+tree     = "Protons"
+spec     = 0
+branches = [["pX","D"], ["pY","D"], ["pZ","D"], ["Energy","D"]]
+index    = ["Index", "I"]
+
+[probe.events.particles.pions]
+tree     = "Pions"
+spec     = 0
+branches = [["pX","D"], ["pY","D"], ["pZ","D"], ["Energy","D"]]
+index    = ["Index", "I"]
+
+[record]
+serial    = 1
+bin_count = 400
+
+[record.paths]
+directory = "output/Lambda_Reconstruction/"
+
+[record.file]
+prefix = "Lambda_Recons"
+events = true
+
+[monitor.logs]
+save_final_log = true
+
+[lambda]
+hist_limits = "Lambda_Limits"
+```
+
+---
+
+## Section reference
+
+<AccordionGroup>
+
+  <Accordion title="[events]">
+
+    Controls how many events the pipeline processes.
+
+    <ParamField path="event_count" type="number" default="0">
+      Number of events to process from the input file. `0` means process all events in the file.
+
+      ```toml
+      [events]
+      event_count = 100_000
+      ```
+    </ParamField>
+
+  </Accordion>
+
+  <Accordion title="[threads]">
+
+    A convenience section that sets worker-pool sizes in one place. Individual sections (`[probe]`, `[record]`) have their own override keys; absent per-section keys fall back to `[threads]` values. `0` or absent means auto: `floor((hardware_concurrency − 2) / 3)`, minimum 1.
+
+    <ParamField path="probe" type="number" default="0">
+      ROOT reader thread count used by Probe.
+    </ParamField>
+
+    <ParamField path="analysis" type="number" default="0">
+      Collector/callback thread count. Ignored when `callback_mode = "WorkerThread"`.
+    </ParamField>
+
+    <ParamField path="writer" type="number" default="0">
+      Record fill-worker pool size.
+    </ParamField>
+
+    <ParamField path="pythia" type="number" default="0">
+      Pythia generator threads. Unused in Probe pipelines.
+    </ParamField>
+
+    ```toml
+    [threads]
+    probe    = 4
+    analysis = 4
+    writer   = 4
+    pythia   = 4
+    ```
+
+  </Accordion>
+
+  <Accordion title="[probe]">
+
+    Configures the ROOT TTree reader and threading model.
+
+    <ParamField path="input_file" type="string" required>
+      Path to the input ROOT file containing the TTrees to read.
+    </ParamField>
+
+    <ParamField path="probe_threads" type="number" default="0">
+      Number of reader threads. Overrides `[threads].probe`. `0` = auto.
+    </ParamField>
+
+    <ParamField path="analysis_threads" type="number" default="0">
+      Number of collector/callback threads. Overrides `[threads].analysis`. Ignored in `WorkerThread` mode.
+    </ParamField>
+
+    <ParamField path="callback_mode" type="string" default='"CollectorThread"'>
+      Threading strategy for invoking analysis callbacks. `"CollectorThread"` — reader workers push events onto a bounded queue; collector threads pop and invoke the callback. `"WorkerThread"` — each reader worker calls the callback directly, `analysis_threads` is ignored.
+    </ParamField>
+
+    <ParamField path="queue_capacity" type="number" default="0">
+      Maximum number of events held in the bounded event queue. `0` = `10 × probe_threads`.
+    </ParamField>
+
+    <ParamField path="event_particles" type="array">
+      Inline array format for declaring particle species. Each entry is a five-element array:
+      `["label", spec_id, "tree_name", [["branch","type"],...], [["index_branch","type"],...]]`
+
+      ```toml
+      event_particles = [
+          ["protons", 0, "Protons", [["pX","D"],["pY","D"],["pZ","D"],["Energy","D"]], [["Index","I"]]],
+          ["pions",   0, "Pions",   [["pX","D"],["pY","D"],["pZ","D"],["Energy","D"]], [["Index","I"]]],
+      ]
+      ```
+
+      As an alternative, list particle labels here and define each as a `[probe.events.particles.<label>]` table.
+    </ParamField>
+
+  </Accordion>
+
+  <Accordion title="[probe.events.particles.<label>]">
+
+    Named-table format for particle species. Define one table per particle; the label is the key you use in analysis callbacks via `event.particle.at("label")`.
+
+    <ParamField path="tree" type="string" required>
+      Name of the TTree inside the ROOT file for this particle species.
+    </ParamField>
+
+    <ParamField path="spec" type="number" required>
+      Coordinate system ID. `0` = Cartesian `(pX, pY, pZ, E)`, `1` = PtEtaPhiE, `2` = PtEtaPhiM.
+    </ParamField>
+
+    <ParamField path="branches" type="array" required>
+      Four `["branch_name", "type_code"]` pairs specifying the four momentum components in the order required by `spec`. Type codes: `D`=`Double_t`, `F`=`Float_t`, `I`=`Int_t`, `i`=`UInt_t`, `L`=`Long64_t`, `l`=`ULong64_t`.
+    </ParamField>
+
+    <ParamField path="index" type="array" required>
+      Two-element array `["branch_name", "type_code"]` identifying the event-grouping index branch. All rows sharing the same index value are grouped into one event.
+    </ParamField>
+
+    <ParamField path="index_sorted" type="boolean" default="false">
+      Assert that entries within each event are already sorted by index. Enables faster join logic.
+    </ParamField>
+
+    <ParamField path="index_ascending" type="boolean" default="false">
+      Assert that index values are non-decreasing across the TTree.
+    </ParamField>
+
+    <ParamField path="index_monotonic" type="boolean" default="false">
+      Assert that no duplicate index values exist within an event (each particle appears once).
+    </ParamField>
+
+    ```toml
+    [probe.events.particles.protons]
+    tree            = "Protons"
+    spec            = 0
+    branches        = [["pX","D"], ["pY","D"], ["pZ","D"], ["Energy","D"]]
+    index           = ["Index", "I"]
+    index_sorted    = true
+    index_ascending = true
+    index_monotonic = true
+    ```
+
+  </Accordion>
+
+  <Accordion title="[probe.index] — per-species index metadata">
+
+    Alternative to per-table `index_*` keys when using the inline `event_particles` array. Applies to each species in declaration order.
+
+    <ParamField path="sorted" type="boolean[]">
+      Element-wise array; `sorted[i]` applies to the i-th particle in `event_particles`.
+    </ParamField>
+
+    <ParamField path="ascending" type="boolean[]">
+      Element-wise ascending assertion per species.
+    </ParamField>
+
+    <ParamField path="monotonic" type="boolean[]">
+      Element-wise monotonic assertion per species.
+    </ParamField>
+
+    ```toml
+    [probe.index]
+    sorted    = [true, true]
+    ascending = [true, true]
+    monotonic = [true, true]
+    ```
+
+  </Accordion>
+
+  <Accordion title="[probe.feed.*] — feed (scalar) particle sources">
+
+    Feed mode reads a single TTree per labelled particle, delivering one `Lorentz` per entry (no event grouping) along with named scalar or array node columns. Configure via `[probe.feed.<label>]` sub-tables, analogous to `[probe.events.particles.<label>]`. Feed and Event configurations can coexist in `Mixed` mode; Probe automatically selects the `ActiveMode` from populated buckets.
+
+  </Accordion>
+
+  <Accordion title="[record]">
+
+    Controls the fill-worker pool and output file naming.
+
+    <ParamField path="serial" type="number" default="0">
+      Serial number stamped on output directory and filenames for run versioning.
+    </ParamField>
+
+    <ParamField path="sr_padding" type="number" default="2">
+      Zero-padding width for the serial number in filenames. `2` produces `_01`, `_02`, etc.
+    </ParamField>
+
+    <ParamField path="bin_count" type="number" default="500">
+      Default histogram bin count for all declared TH1/TH2 histograms.
+    </ParamField>
+
+    <ParamField path="hist_scaling" type="number" default="1.0">
+      Scale factor applied to all histogram bin contents at write time via `scaleAndWrite`.
+    </ParamField>
+
+    <ParamField path="writer_threads" type="number" default="0">
+      Number of fill-worker threads. Overrides `[threads].writer`. `0` = auto.
+    </ParamField>
+
+    <ParamField path="writer_queue_capacity" type="number" default="0">
+      Depth of the fill-request queue. `0` = Writer default (1024).
+    </ParamField>
+
+  </Accordion>
+
+  <Accordion title="[record.paths]">
+
+    Output directory configuration for the ROOT file, logs, and checkpoints.
+
+    <ParamField path="directory" type="string" default='"output/"'>
+      Base output directory. The ROOT file and (optionally) sub-directories are created here.
+    </ParamField>
+
+    <ParamField path="output_log_directory" type="string" default='"logs/"'>
+      Directory name for per-run log files, relative to `directory` when `logInSubDir = true`.
+    </ParamField>
+
+    <ParamField path="checkpoint_directory" type="string" default='"checkpoints/"'>
+      Directory name for checkpoint ROOT files.
+    </ParamField>
+
+    <ParamField path="serialDirectory" type="boolean" default="true">
+      Append the serial number (zero-padded) to the output directory name.
+    </ParamField>
+
+    <ParamField path="logInSubDir" type="boolean" default="true">
+      Place log files inside `output_log_directory` rather than directly in `directory`.
+    </ParamField>
+
+    <ParamField path="checkpointsInSubDir" type="boolean" default="true">
+      Place checkpoint files inside `checkpoint_directory`.
+    </ParamField>
+
+  </Accordion>
+
+  <Accordion title="[record.file]">
+
+    Controls which components are appended to the output ROOT filename.
+
+    <ParamField path="prefix" type="string" default='"output"'>
+      Fixed string at the start of the filename.
+    </ParamField>
+
+    <ParamField path="serial" type="boolean" default="true">
+      Append the zero-padded serial number to the filename.
+    </ParamField>
+
+    <ParamField path="energy" type="boolean" default="true">
+      Append the Pythia beam energy (e.g. `_7000GeV`) to the filename.
+    </ParamField>
+
+    <ParamField path="events" type="boolean" default="true">
+      Append the event count (e.g. `_100k`) to the filename.
+    </ParamField>
+
+    ```toml
+    [record.file]
+    prefix = "Lambda_Recons"
+    serial = false
+    energy = false
+    events = true
+    ```
+
+  </Accordion>
+
+  <Accordion title="[record.metadata]">
+
+    Run provenance metadata saved to the ROOT file via `Record::Writer::writeMeta`. All keys are optional strings.
+
+    <ParamField path="dataset_name" type="string" default='""'>
+      Human-readable dataset identifier, e.g. `"Lambda_MC_pp"`.
+    </ParamField>
+
+    <ParamField path="data_type" type="string" default='""'>
+      `"MC"` or `"Data"`.
+    </ParamField>
+
+    <ParamField path="run_period" type="string" default='""'> Run period label.</ParamField>
+    <ParamField path="campaign" type="string" default='""'> Analysis campaign name.</ParamField>
+    <ParamField path="experiment" type="string" default='""'> Experiment or framework name.</ParamField>
+    <ParamField path="notes" type="string" default='""'> Free-form notes.</ParamField>
+    <ParamField path="known_issues" type="string" default='""'> Known issues with this run.</ParamField>
+    <ParamField path="contact" type="string" default='""'> Author or contact email.</ParamField>
+    <ParamField path="generator" type="string" default='""'> Event generator, e.g. `"Pythia8"`.</ParamField>
+    <ParamField path="tune" type="string" default='""'> Generator tune name.</ParamField>
+    <ParamField path="pdf_set" type="string" default='""'> Parton distribution function set.</ParamField>
+
+  </Accordion>
+
+  <Accordion title="[record.limits.<Name>]">
+
+    Histogram axis limits for a named observable. `Config::loadLimitsFile` reads these tables. Each table defines five `RangeSize` levels; you select which level to use when declaring histograms in Lambda.
+
+    <ParamField path="Minute" type="number[2]">Tightest range `[low, high]`.</ParamField>
+    <ParamField path="Small" type="number[2]">Narrow range.</ParamField>
+    <ParamField path="Moderate" type="number[2]">Medium range.</ParamField>
+    <ParamField path="Large" type="number[2]">Wide range.</ParamField>
+    <ParamField path="Extreme" type="number[2]">Full physical range.</ParamField>
+
+    The `Name` must match the `ParticleProperty` string key (e.g. `Mass_Invariant`, `Momentum_Transverse`, `Rapidity`). Predefined limit tables in `configs/all.toml` cover:
+
+    | Table | Observable |
+    |---|---|
+    | `Mass_Invariant` | Lorentz-invariant mass |
+    | `Mass_Transverse` | Transverse mass |
+    | `Energy_Net` | Total energy |
+    | `Energy_Transverse` | Transverse energy |
+    | `Momentum_Net` | 3-momentum magnitude |
+    | `Momentum_Transverse` | Transverse momentum |
+    | `Momentum_X` | x-component |
+    | `Momentum_Y` | y-component |
+    | `Momentum_Z` | z-component |
+    | `Rapidity` | Longitudinal rapidity |
+    | `Pseudorapidity` | Pseudorapidity η |
+    | `Azimuthal_Angle` | Azimuthal angle φ |
+    | `Multiplicity` | Particle multiplicity |
+
+    ```toml
+    [record.limits.Mass_Invariant]
+    Minute   = [1.110, 1.120]
+    Small    = [1.105, 1.125]
+    Moderate = [1.08,  1.15]
+    Large    = [0.8,   1.25]
+    Extreme  = [0.2,   3.0]
+    ```
+
+  </Accordion>
+
+  <Accordion title="[monitor]">
+
+    Top-level Monitor keys.
+
+    <ParamField path="true_time_at_config" type="boolean" default="false">
+      When `true`, the elapsed-time counter starts when `configureMonitor` runs rather than when the first event is processed. Useful when configuration takes non-trivial time.
+    </ParamField>
+
+  </Accordion>
+
+  <Accordion title="[monitor.intervals]">
+
+    Controls how often the heartbeat thread emits status updates and performs maintenance.
+
+    <ParamField path="print_interval" type="number" default="1000">
+      Number of events between status-line terminal updates.
+    </ParamField>
+
+    <ParamField path="heartbeat_interval" type="number" default="2000">
+      Milliseconds between heartbeat file writes.
+    </ParamField>
+
+    <ParamField path="terminal_refresh_interval" type="number" default="2.0">
+      Minutes between full terminal redraws.
+    </ParamField>
+
+    <ParamField path="program_stall_threshold" type="number" default="5.0">
+      Minutes of no forward progress before the monitor declares a stall and triggers an abort + finalize sequence.
+    </ParamField>
+
+    <ParamField path="checkpoint_interval" type="number" default="100000">
+      Events between automatic checkpoint snapshots. Triggers a checkpoint ROOT file write when `save_checkpoints = true`.
+    </ParamField>
+
+  </Accordion>
+
+  <Accordion title="[monitor.logs]">
+
+    Controls which log artifacts are written to disk.
+
+    <ParamField path="save_heartbeat" type="boolean" default="false">
+      Enable periodic heartbeat file writes to `output_log_directory`.
+    </ParamField>
+
+    <ParamField path="save_checkpoints" type="boolean" default="false">
+      Enable checkpoint ROOT file snapshots at each `checkpoint_interval`.
+    </ParamField>
+
+    <ParamField path="save_log_threads" type="boolean" default="false">
+      Write per-thread statistics files at the end of the run.
+    </ParamField>
+
+    <ParamField path="save_final_log" type="boolean" default="true">
+      Write a final run-statistics log file when the pipeline finishes.
+    </ParamField>
+
+  </Accordion>
+
+  <Accordion title="[pythia]">
+
+    Pythia8 generator configuration. Only consumed by Pythia pipelines (`_Lambda_Data.cc`); ignored by Probe pipelines.
+
+    <ParamField path="beam_energy" type="number" default="7000.0">
+      Centre-of-mass collision energy in GeV. Forwarded to Pythia as `Beams:eCM`.
+    </ParamField>
+
+    <ParamField path="cmnd_file" type="string" default='""'>
+      Path to a Pythia `.cmnd` configuration file. Empty string disables Pythia command loading.
+    </ParamField>
+
+    <ParamField path="seed" type="number" default="0">
+      Random seed. `0` uses the Pythia default seeding.
+    </ParamField>
+
+    <ParamField path="pythia_threads" type="number" default="0">
+      Number of parallel Pythia generator threads. `0` = auto.
+    </ParamField>
+
+  </Accordion>
+
+  <Accordion title="[lambda]">
+
+    Lambda-module–specific keys. Read by `modules/Lambda/Parameters.hh`.
+
+    <ParamField path="hist_limits" type="string" required>
+      Name or path of the limits TOML file. A bare name (e.g. `"Lambda_Limits"`) is resolved by `Config::resolveLimitsPath` to `configs/<name>.toml`. The special value `"all"` resolves to `configs/all.toml`, making that file self-contained.
+    </ParamField>
+
+    <ParamField path="delta_mass_gev" type="number" default="0.15">
+      Half-width of the invariant mass window (GeV) used to cut Lambda candidates.
+    </ParamField>
+
+    <ParamField path="delta_theta_rad" type="number" default="0.1">
+      Opening-angle cut in radians applied during candidate reconstruction.
+    </ParamField>
+
+    <ParamField path="reserved_protons" type="number" default="2">
+      Baseline beam-proton count per event subtracted before multiplicity calculations. For Ne–Ne collisions set this to `20` (2 × Z = 2 × 10).
+    </ParamField>
+
+    ```toml
+    [lambda]
+    hist_limits      = "Lambda_Limits"
+    delta_mass_gev   = 0.15
+    delta_theta_rad  = 0.1
+    reserved_protons = 20
+    ```
+
+  </Accordion>
+
+</AccordionGroup>

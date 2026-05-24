@@ -1,0 +1,261 @@
+---
+title: "Streaming ROOT events with ProbeParallel"
+description: "Understand how ProbeParallel opens ROOT TFiles across multiple threads, joins event rows by index, and delivers typed Event and Feed structs to your callback."
+---
+
+`ProbeParallel` is the component responsible for reading your ROOT TTrees in parallel and calling your analysis callback once per event. It opens the input file on `probe_threads` reader threads simultaneously, partitions the event-index space across them, and delivers typed `Event` or `Feed` structs depending on which TOML buckets you have configured. You never write TTree iteration code yourself — you provide a callback and call one of three streaming methods, and `ProbeParallel` handles partitioning, queue management, and thread lifecycle.
+
+## The two payload structs
+
+Every event delivered to your callback arrives as one or both of two structs, declared in `Probe/Types.hh`.
+
+<Tabs>
+  <Tab title="Event">
+    `Event` represents a collection of items that belong to a single physics event. Each particle label maps to a `vector<Lorentz>` (all protons in event K, for example), and each node label maps to a named column map.
+
+    ```cpp
+    struct Event {
+        Long64_t index{-1};
+        std::unordered_map<std::string, std::vector<Lorentz>>                        particle;
+        std::unordered_map<std::string, std::unordered_map<std::string, AuxColumn>>  node;
+
+        const std::vector<Lorentz>& particles(const std::string& label) const;
+        const std::unordered_map<std::string, AuxColumn>& nodes(const std::string& label) const;
+        std::size_t n(const std::string& label) const;
+
+        template<typename T>
+        const std::vector<T>& column(const std::string& label, const std::string& col) const;
+    };
+    ```
+
+    Access patterns inside a callback:
+
+    ```cpp
+    // Particle collection — vector<Lorentz> for all protons in this event
+    const std::vector<Lorentz>& protons = ev.particle["protons"];
+
+    // Node column — AuxColumn (a typed vector) from a row-indexed source
+    const AuxColumn& energies = ev.node["hits"]["energy"];
+
+    // Typed column accessor — throws on type mismatch
+    const std::vector<float>& times = ev.column<float>("hits", "time");
+    ```
+
+    `AuxColumn` holds one of several `vector<T>` alternatives (`double`, `float`, `int32_t`, `uint32_t`, `int64_t`, `uint64_t`, `bool`) and exposes a typed `as<T>()` accessor that throws on mismatch.
+  </Tab>
+  <Tab title="Feed">
+    `Feed` represents one scalar value per label per source entry — one entry equals one event. Each particle label maps to a single `Lorentz` (e.g. the leading jet for this entry), and each node label maps to a named map of `AuxValue` scalars or arrays.
+
+    ```cpp
+    struct Feed {
+        Long64_t index{-1};
+        std::unordered_map<std::string, Lorentz>                                       particle;
+        std::unordered_map<std::string, std::unordered_map<std::string, AuxValue>>     node;
+
+        const Lorentz& particles(const std::string& label) const;
+        const std::unordered_map<std::string, AuxValue>& nodes(const std::string& label) const;
+
+        template<typename T>
+        const T& value(const std::string& label, const std::string& col) const;
+    };
+    ```
+
+    Access patterns:
+
+    ```cpp
+    // Single Lorentz for the leading jet in this entry
+    const Lorentz& jet = feed.particle["leading_jet"];
+
+    // Scalar AuxValue — e.g. a generator weight
+    const AuxValue& w = feed.node["weights"]["genWeight"];
+
+    // Typed accessor — throws on mismatch
+    const float& genW = feed.value<float>("weights", "genWeight");
+    ```
+
+    `AuxValue` is a `std::variant` covering scalar and array alternatives for all six numeric types plus `bool`. Variable-length array branches land as the `vector<T>` alternative.
+  </Tab>
+</Tabs>
+
+<Note>
+The `particle` and `node` maps are independent. `ev.node["muon"]` does not need to parallel `ev.particle["muon"]` — you can give node groups any label, whether or not it matches a particle label.
+</Note>
+
+## The three streaming methods
+
+`ProbeParallel` exposes three template methods. You choose based on which TOML buckets you have populated.
+
+```cpp
+template <typename CB>
+void streamEvents(CB&& ce);   // ce: void(const Event&, int collectorId)
+
+template <typename CB>
+void streamFeed(CB&& cf);     // cf: void(const Feed&,  int collectorId)
+
+template <typename CE, typename CF>
+void stream(CE&& ce, CF&& cf);
+```
+
+| Method | When to use | Throws if |
+|---|---|---|
+| `streamEvents(ce)` | `[probe.events.*]` only | No event-bound data is configured |
+| `streamFeed(cf)` | `[probe.feed.*]` only | No feed-bound data is configured |
+| `stream(ce, cf)` | Both buckets, or either — auto-routes | Neither bucket is configured |
+
+When you call `stream(ce, cf)` in Mixed mode, `ce` fires first, then `cf`, for the same event — both receive the same `index`. You can assert `e.index == f.index` inside the callback to verify synchronization.
+
+## ActiveMode — resolved from config
+
+`ProbeParallel` resolves its `ActiveMode` from the populated TOML buckets and an optional `stream =` key in `[probe]`:
+
+| `[probe.events]` declared? | `[probe.feed]` declared? | Active mode |
+|---|---|---|
+| Yes | No | `Events` |
+| No | Yes | `Feed` |
+| Yes | Yes | `Mixed` |
+| No | No | Error at parse time |
+
+Setting `stream = "events"` with an empty `[probe.events]` block throws. `stream = "auto"` (the default) never throws on the discriminator alone.
+
+## CallbackMode — CollectorThread vs WorkerThread
+
+`CallbackMode` controls which threads actually invoke your callback. Set it with `callback_mode` in `[probe]`.
+
+<Tabs>
+  <Tab title="CollectorThread (default)">
+    Reader workers push completed frames onto a bounded queue. A pool of `analysis_threads` collector threads pops frames and invokes your callback concurrently.
+
+    ```toml
+    [probe]
+    callback_mode    = "CollectorThread"
+    analysis_threads = 0   # defaults to same count as probe_threads
+    queue_capacity   = 0   # defaults to 10 × probe_threads
+    ```
+
+    **Use this mode** when your callback does significant computation (reconstruction, selection cuts) and you want to parallelise analysis work independently of I/O.
+
+    **Your callback must be thread-safe.** Multiple collector threads invoke it concurrently with different `threadId` values.
+  </Tab>
+  <Tab title="WorkerThread">
+    Each reader worker invokes the callback directly after reading its frame. No queue, no collector threads — `analysis_threads` is ignored.
+
+    ```toml
+    [probe]
+    callback_mode = "WorkerThread"
+    ```
+
+    **Use this mode** when your callback is lightweight (e.g. only pushing fill requests) and you want to avoid queue overhead. The callback is still invoked from multiple reader threads, so it must still be thread-safe.
+  </Tab>
+</Tabs>
+
+<Tip>
+`Record::Writer`'s fill methods (`fillParticleEvent`, `fillTH1`, etc.) push to an internal queue and are thread-safe by design. As long as your callback only calls Writer fill methods and reads from the immutable `Event`/`Feed` struct, no additional locking is needed.
+</Tip>
+
+## Callback signature — real example
+
+The `Lambda::rootAnalysis` callback in `modules/Lambda.hh` shows the pattern used in the Lambda reconstruction driver:
+
+```cpp
+// modules/Lambda.hh — rootAnalysis
+// Called once per Probe::Event via ProbeParallel::streamEvents (multi-threaded).
+inline void rootAnalysis(const Probe::Event& ev,
+                         int threadId,
+                         AnalysisContext& ctx)
+{
+    MONITOR_SCOPE_TIMER("Lambda.rootAnalysis");
+    const std::size_t eventIndex = ctx.asyncLogger.countEvent();
+
+    const std::vector<Lorentz>& protonList = ev[ctx.parameters.protonLabel];
+    const std::vector<Lorentz>& pionList   = ev[ctx.parameters.pionLabel];
+
+    Candidates candidates;
+    {
+        MONITOR_SCOPE_TIMER("Lambda.reconstructCandidates");
+        candidates = reconstructCandidates(protonList, pionList, ctx.parameters);
+    }
+    fillCandidates(ctx.writer, std::move(candidates));
+
+    ctx.asyncLogger.publish(Monitor::RunPhase::Analysis);
+}
+```
+
+The driver captures `ctx` by reference in a lambda wrapper and passes it to `streamEvents`:
+
+```cpp
+probe.streamEvents([&ctx](const Probe::Event& ev, int tid) {
+    Lambda::rootAnalysis(ev, tid, ctx);
+});
+```
+
+## TOML configuration for Probe
+
+<CodeGroup>
+
+```toml events bucket (muons + jets)
+[probe]
+stream = "auto"
+
+[probe.events]
+particles = ["muon", "jet"]
+nodes     = ["hits"]
+
+[probe.events.particles.muon]
+tree     = "Events"
+spec     = 2          # 2 = PtEtaPhiM
+branches = ["Muon_pt", "Muon_eta", "Muon_phi", "Muon_mass"]
+
+[probe.events.particles.jet]
+tree     = "Events"
+spec     = 2
+branches = ["Jet_pt", "Jet_eta", "Jet_phi", "Jet_mass"]
+aux      = [["Jet_btagDeepFlavB", "F"]]
+
+[probe.events.nodes.hits]
+tree     = "Hits"
+index    = ["event_index", "L"]
+branches = [["energy", "F"], ["time", "F"], ["channel", "I"]]
+```
+
+```toml feed bucket (leading jet + MET)
+[probe.feed]
+particles = ["leading_jet"]
+nodes     = ["weights", "met"]
+
+[probe.feed.particles.leading_jet]
+tree     = "Events"
+spec     = 2
+branches = ["LeadingJet_pt", "LeadingJet_eta", "LeadingJet_phi", "LeadingJet_mass"]
+
+[probe.feed.nodes.weights]
+tree     = "Events"
+branches = [["genWeight", "F"], ["pu_weight", "F"]]
+
+[probe.feed.nodes.met]
+tree     = "Events"
+branches = [{ name = "MET_pt", type = "F" }, { name = "MET_phi", type = "F" }]
+```
+
+```toml legacy inline format (events only)
+[probe]
+input_file = "output/Lambda_Data/data.root"
+probe_threads = 0
+callback_mode = "CollectorThread"
+
+event_particles = [
+    ["protons", 0, "Protons",
+        [["pX","D"],["pY","D"],["pZ","D"],["Energy","D"]],
+        [["Index","I"]]],
+    ["pions", 0, "Pions",
+        [["pX","D"],["pY","D"],["pZ","D"],["Energy","D"]],
+        [["Index","I"]]],
+]
+```
+
+</CodeGroup>
+
+The `spec` field controls the kinematic coordinate system: `0` = Cartesian (x, y, z, E), `1` = PtEtaPhiE, `2` = PtEtaPhiM. Branch type codes follow ROOT conventions: `F` = `Float_t`, `D` = `Double_t`, `I` = `Int_t`, `L` = `Long64_t`, `O` = `Bool_t`.
+
+## ProbeIMT — in-memory alternative
+
+`ProbeIMT` is an alternative reader backed by ROOT's `TTreeProcessorMT`. It loads events into a three-dimensional buffer then flushes in parallel via `run(callback)`. Use `ProbeIMT` when you need ROOT's implicit multi-threading for in-memory table reads rather than the explicit partitioned streaming that `ProbeParallel` provides. `ProbeIMT` supports event-keyed (flat) streams only and takes `vector<EventParticleSpec>` directly rather than a full `ProbeConfig`.

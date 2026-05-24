@@ -1,0 +1,91 @@
+---
+title: "Monitor configuration: progress and logging"
+description: "Set status-print frequency, checkpoint and heartbeat intervals, stall detection threshold, and control which log files are written to disk during analysis."
+---
+
+The `[monitor]` section controls the background `AsyncLogger` heartbeat thread that renders terminal progress, detects pipeline stalls, and writes log files. Tuning these settings lets you balance observability overhead against analysis throughput and disk usage.
+
+## Top-level `[monitor]` keys
+
+<ParamField path="true_time_at_config" type="boolean" default="false">
+  When `true`, the wall-clock time recorded at configuration is used as `t = 0` for elapsed-time and ETA calculations. When `false`, the clock starts when the pipeline begins processing events. Set to `true` when you want run-time reports to include configuration and setup overhead.
+</ParamField>
+
+## `[monitor.intervals]`
+
+<ParamField path="print_interval" type="number" default="1000">
+  Number of events between status-line updates on the terminal. Lower values give more frequent progress feedback at the cost of slightly more I/O. The `Lambda_Generation.toml` example uses `50` for short runs where granular feedback matters; `Lambda_Reconstruction.toml` uses `1000` for longer runs.
+</ParamField>
+
+<ParamField path="checkpoint_interval" type="number" default="100000">
+  Number of events between automatic checkpoint snapshots. A checkpoint calls `Record::Writer::checkpoint()`, which serialises current histogram state to disk so that a stalled or interrupted run can be inspected or resumed. Has no effect unless `save_checkpoints` is also `true`.
+</ParamField>
+
+<ParamField path="heartbeat_interval" type="number" default="2000">
+  Milliseconds between heartbeat thread wake-ups. The heartbeat thread renders the terminal progress bar, checks for stalls, and flushes pending log slots on each cycle. Reducing this value increases terminal responsiveness but uses more CPU.
+</ParamField>
+
+<ParamField path="terminal_refresh_interval" type="number" default="2.0">
+  Minutes between full terminal redraws. A full redraw clears and re-renders the entire status block. Between redraws, only the status line is updated.
+</ParamField>
+
+<ParamField path="program_stall_threshold" type="number" default="5.0">
+  Minutes of silence — no events consumed — before the monitor declares a stall and triggers an abort followed by a graceful `finalize()`. Prevents indefinite hangs from deadlocked workers or missing input files.
+</ParamField>
+
+## `[monitor.logs]`
+
+<ParamField path="save_checkpoints" type="boolean" default="false">
+  When `true`, the Watchdog triggers a checkpoint ROOT file snapshot at each `checkpoint_interval`. The snapshot is written to `checkpoint_directory`. Enable this during long runs or when you need partial results from a job that may be interrupted.
+</ParamField>
+
+<ParamField path="save_log_threads" type="boolean" default="false">
+  When `true`, writes per-thread statistics files at the end of the run. Each file records fill counts, queue wait times, and other per-worker metrics. Useful when profiling thread imbalance or debugging fill-worker saturation.
+</ParamField>
+
+<ParamField path="save_heartbeat" type="boolean" default="false">
+  When `true`, writes a heartbeat file on each heartbeat cycle. The logger appends a timestamp and event-count line to a heartbeat log in `output_log_directory`. Useful for external monitoring scripts that need a live progress signal without parsing terminal output.
+</ParamField>
+
+<ParamField path="save_final_log" type="boolean" default="true">
+  When `true`, writes a final run-statistics file after `finalize()` completes. The file records total events processed, wall time, throughput, and any stall events. This is the primary post-run audit trail and is enabled by default.
+</ParamField>
+
+## Example
+
+<CodeGroup>
+
+```toml Lambda_Reconstruction.toml
+[monitor]
+true_time_at_config = true
+
+[monitor.intervals]
+print_interval            = 1000
+checkpoint_interval       = 100000
+heartbeat_interval        = 2000
+terminal_refresh_interval = 2
+program_stall_threshold   = 5
+
+[monitor.logs]
+save_checkpoints = false
+save_log_threads = false
+save_heartbeat   = false
+save_final_log   = true
+```
+
+```toml Lambda_Generation.toml (short runs)
+[monitor]
+
+[monitor.intervals]
+print_interval            = 50
+checkpoint_interval       = 100000
+heartbeat_interval        = 2000
+terminal_refresh_interval = 2
+program_stall_threshold   = 5
+```
+
+</CodeGroup>
+
+<Tip>
+  For production runs over tens of millions of events, set `save_checkpoints = true` and choose a `checkpoint_interval` that writes every few minutes. This gives you partial results you can inspect if the job is cancelled by a scheduler.
+</Tip>

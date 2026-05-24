@@ -1,0 +1,77 @@
+{
+  "$schema": "https://mintlify.com/docs.json",
+  "name": "High-Energy",
+  "theme": "aspen",
+  "favicon": "https://media.brand.dev/d9eec136-1b58-4560-8c2a-e122eba9a857.jpg",
+  "colors": {
+    "primary": "#0c64c4",
+    "light": "#84b4dc",
+    "dark": "#0c64c4"
+  },
+  "navbar": {
+    "primary": {
+      "type": "github",
+      "href": "https://github.com/Rajnoor-Brar/High-Energy"
+    }
+  },
+  "navigation": {
+    "tabs": [
+      {
+        "tab": "Changelog",
+        "pages": [
+          "changelog/overview"
+        ]
+      },
+      {
+        "tab": "Documentation",
+        "groups": [
+          {
+            "group": "Get Started",
+            "pages": [
+              "introduction",
+              "quickstart",
+              "installation"
+            ]
+          },
+          {
+            "group": "Configuration",
+            "pages": [
+              "configuration/overview",
+              "configuration/events",
+              "configuration/probe",
+              "configuration/record",
+              "configuration/monitor",
+              "configuration/limits"
+            ]
+          },
+          {
+            "group": "Core Concepts",
+            "pages": [
+              "concepts/pipeline",
+              "concepts/probe-streaming",
+              "concepts/record-writer",
+              "concepts/monitor"
+            ]
+          },
+          {
+            "group": "Guides",
+            "pages": [
+              "guides/lambda-reconstruction",
+              "guides/data-generation",
+              "guides/paint-histograms",
+              "guides/threading"
+            ]
+          },
+          {
+            "group": "Reference",
+            "pages": [
+              "reference/physics-types",
+              "reference/paint-config",
+              "reference/toml-schema"
+            ]
+          }
+        ]
+      }
+    ]
+  }
+}
