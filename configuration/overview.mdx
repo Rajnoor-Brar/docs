@@ -5,7 +5,7 @@ description: "A single TOML file drives the entire High-Energy pipeline. Learn h
 
 Every High-Energy analysis run is controlled by one TOML file. At startup, `Config::configure<ProbePipeline>(path)` reads that file, resolves thread counts, loads histogram limits, and distributes typed configuration structs to `Probe`, `Record`, and `Monitor` — in the correct order, without any manual wiring on your part.
 
-The file is organised into six top-level sections. Each section maps to a distinct part of the pipeline:
+The file is organised into seven top-level sections. Each section maps to a distinct part of the pipeline:
 
 | Section | Controls |
 |---|---|
